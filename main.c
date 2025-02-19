@@ -36,8 +36,8 @@ void usage(void)
 	printf("\tseek\n");
 	printf("\tdel filename\n");
 	printf("\trename from to\n");
-	printf("\tmv from to\n");
-	printf("\tcp from to\n");
+	printf("\tmv from to (file or path)\n");
+	printf("\tcp from_filename to_filename\n");
 	printf("\tbegin\n");
 	printf("\tcommit\n");
 	printf("\trollback\n");
