@@ -1,14 +1,3 @@
-/*----------------------------------------------------------------------------/
-/  FileFS - Implement a virtual file system within a single file R1.0         /
-/-----------------------------------------------------------------------------/
-/
-/ Copyright (C) 2025, cyantree, all right reserved.
-/
-/ mail: cyantree.guo@gmail.com
-/ QQ: 9234933
-/
-/----------------------------------------------------------------------------*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +15,8 @@ void usage(void)
 	printf("\tpwd\n");
 	printf("\tls (path)\n");
 	printf("\tcd path\n");
+	printf("\ttree\n");
+	printf("\tusermod path\n");
 	printf("\tmkdir path\n");
 	printf("\trm path\n");
 	printf("\techo filename content\n");
@@ -36,11 +27,13 @@ void usage(void)
 	printf("\tseek\n");
 	printf("\tdel filename\n");
 	printf("\trename from to\n");
-	printf("\tmv from to (file or path)\n");
-	printf("\tcp from_filename to_filename\n");
+	printf("\tmv from to\n");
+	printf("\tcp from to\n");
+	printf("\tincp file_out to_in(copy file_outof_filefs to file_inof_filefs)\n");
+	printf("\toutcp from_in to_out(copy file_inof_filefs to file_outof_filefs)\n");
 	printf("\tbegin\n");
 	printf("\tcommit\n");
-	printf("\trollback\n");
+	printf("\trollback\n");	
 }
 
 static void fun_ls(FileFS *ffs, char *path)
@@ -88,6 +81,44 @@ static void fun_ls(FileFS *ffs, char *path)
 	}
 	FileFS_closedir(ffs, dirp);
 	printf("  dir:%d, file:%d\n", n_dir, n_file);
+}
+
+static void fun_tree(FileFS *ffs)
+{
+	char *path = FileFS_getcwd(ffs);
+	int len = (int)strlen(path);
+	if ( len < 1 ) return;
+	
+	char *sol_path;
+	FFS_DIR *dirp;
+	struct FFS_dirent *dir;
+
+	int n_dir=0, n_file = 0;
+	
+	if ( NULL == (dirp = FileFS_opendir(ffs, path, &sol_path)) ) {
+		printf("path ERR\n");
+		return;
+	}
+	printf("%s\n", sol_path);
+	while (1) {
+		dir = FileFS_readdir(ffs, dirp);
+		if ( dir == NULL ) break; // 当前目录为空
+		
+		if (strcmp(dir->d_name, ".") == 0) {
+			continue;
+		}
+		if (strcmp(dir->d_name, "..") == 0) {
+			continue;
+		}
+		
+		// dir
+		if ( dir->d_type == FFS_DT_DIR ) {
+			printf(" |_%s\n", dir->d_name);
+			n_dir++;
+			continue;
+		}
+	}
+	FileFS_closedir(ffs, dirp);
 }
 
 static void fun_fwrite(FileFS *ffs, char *filename, char *content, char *mode)
@@ -161,6 +192,113 @@ static void fun_seek(FileFS *ffs, char *filename)
 	printf("pos:%I64d\n", pos);
 	
 	FileFS_fclose(ffs, fp);
+}
+
+static void fun_in_cp(FileFS *ffs, char *from_out, char *to_in)
+{
+	FILE *fp;
+	
+	fp = fopen(from_out, "rb");
+	if ( fp == NULL ) {
+		printf("err: can not read from_out(%s)\n", from_out);
+		return;
+	}
+	
+	FFS_FILE *ffp;
+	ffp = FileFS_fopen(ffs, to_in, "w");
+	if ( ffp == NULL ) {
+		printf("err: can not create to_in(%s)\n", to_in);
+	}
+	
+	unsigned char buf[1024];
+	int len;
+	
+	while (1) {
+		len = fread(buf, 1, 1024, fp);
+		if ( len != 1024 ) {
+			if ( len > 0 ) {
+				FileFS_fwrite(ffs, buf, 1, len, ffp);
+				break;
+			}
+		}
+		FileFS_fwrite(ffs, buf, 1, len, ffp);
+	}
+	
+	FileFS_fclose(ffs, ffp);
+	fclose(fp);
+}
+
+static void fun_out_cp(FileFS *ffs, char *from_in, char *to_out)
+{
+	FFS_FILE *ffp;
+	ffp = FileFS_fopen(ffs, from_in, "r");
+	if ( ffp == NULL ) {
+		printf("err: can not create from_in(%s)\n", from_in);
+	}
+	
+	FILE *fp;
+	fp = fopen(to_out, "wb");
+	if ( fp == NULL ) {
+		printf("err: can not read to_out(%s)\n", to_out);
+		return;
+	}	
+	
+	unsigned char buf[1024];
+	int len;
+	
+	while (1) {
+		len = FileFS_fread(ffs, buf, 1, 1024, ffp);
+		if ( len != 1024 ) {
+			if ( len > 0 ) {
+				fwrite(buf, 1, len, fp);
+				break;
+			}
+		}
+		fwrite(buf, 1, len, fp);
+	}
+	
+	fclose(fp);
+	FileFS_fclose(ffs, ffp);
+}
+
+static void fun_cp(FileFS *ffs, char *from, char *to)
+{
+	FFS_FILE *ffp;
+	ffp = FileFS_fopen(ffs, from, "r");
+	if ( ffp == NULL ) {
+		printf("err: can not create from(%s)\n", from);
+	}
+	
+	FFS_FILE *fp;
+	fp = FileFS_fopen(ffs, to, "w");
+	if ( fp == NULL ) {
+		printf("err: can not read to(%s)\n", to);
+		return;
+	}	
+	
+	unsigned char buf[1024];
+	int len;
+	//int n = 0, loop=0;
+	
+	while (1) {
+		len = FileFS_fread(ffs, buf, 1, 1024, ffp);
+		if ( len != 1024 ) {
+			if ( len > 0 ) {
+				FileFS_fwrite(ffs, buf, 1, len, fp);
+				//n += len;
+				//loop++;
+				//printf("last, len=%d, n=%d, loop=%d\n", len, n, loop);
+				break;
+			}
+		}
+		FileFS_fwrite(ffs, buf, 1, len, fp);
+		//n += len;
+		//loop++;
+		//printf("len=%d, n=%d, loop=%d\n", len, n, loop);
+	}
+	
+	FileFS_fclose(ffs, fp);
+	FileFS_fclose(ffs, ffp);
 }
 
 int main(int argc, char *argv[])
@@ -275,10 +413,40 @@ int main(int argc, char *argv[])
 				if ( ! FileFS_ismount(ffs) ) {
 					printf("ERR: not mount data file.\n");
 				} else {
-					r = FileFS_chdir(ffs, "/");
+					r = FileFS_chdir(ffs, "~");
 					if ( r == 0 ) {
 						printf("cd / ERR\n");
 					}
+				}
+			}
+			continue;
+		} else if (strcmp(cmd, "tree") == 0) {
+			if ( ! FileFS_ismount(ffs) ) {
+				printf("ERR: not mount data file.\n");
+			} else {
+				fun_tree(ffs);
+			}
+			continue;
+		} else if (strncmp(cmd, "usermod", 7) == 0) {
+			if (cmd[7] == ' ') {
+				path = cmd + 8;
+				while (*path == ' ') path++;
+				if (*path != '\0') {
+					if ( ! FileFS_ismount(ffs) ) {
+						printf("ERR: not mount data file.\n");
+					} else {
+						r = FileFS_sethome(ffs, path);
+						if ( r == 0 ) {
+							printf("set home directory %s ERR\n", path);
+						}
+					}
+				}
+			} else {
+				if ( ! FileFS_ismount(ffs) ) {
+					printf("ERR: not mount data file.\n");
+				} else {
+					path = FileFS_gethome(ffs);
+					printf("home directory: %s\n", path);
 				}
 			}
 			continue;
@@ -527,6 +695,8 @@ int main(int argc, char *argv[])
 					if ( ! FileFS_ismount(ffs) ) {
 						printf("ERR: not mount data file.\n");
 					} else {
+						//fun_cp(ffs, filename, txt);
+						//*
 						// return: 0:ok,1-err,2-from name format err,3-to path format err,4-from name not exist,5-to file exist
 						r = FileFS_copy(ffs, filename, txt);
 						if ( r == 1 ) {
@@ -540,10 +710,47 @@ int main(int argc, char *argv[])
 						} else if ( r == 5 ) {
 							printf("ERR: to file exist [%s].\n", txt);
 						}
+						//*/
 					}
 					continue;
 				}
 			}
+		} else if (strncmp(cmd, "incp", 4) == 0) {
+			if (cmd[4] == ' ') {
+				txt = cmd + 5;
+				while (*txt == ' ') txt++;
+				if (*txt != '\0') {
+					fn = txt;
+					while (*txt != ' ') txt++;
+					memset(filename, 0, 128);
+					memcpy(filename, fn, txt-fn);
+					while (*txt == ' ') txt++;
+					if ( ! FileFS_ismount(ffs) ) {
+						printf("ERR: not mount data file.\n");
+					} else {
+						fun_in_cp(ffs, filename, txt);
+					}
+				}
+			}
+			continue;
+		} else if (strncmp(cmd, "outcp", 5) == 0) {
+			if (cmd[5] == ' ') {
+				txt = cmd + 6;
+				while (*txt == ' ') txt++;
+				if (*txt != '\0') {
+					fn = txt;
+					while (*txt != ' ') txt++;
+					memset(filename, 0, 128);
+					memcpy(filename, fn, txt-fn);
+					while (*txt == ' ') txt++;
+					if ( ! FileFS_ismount(ffs) ) {
+						printf("ERR: not mount data file.\n");
+					} else {
+						fun_out_cp(ffs, filename, txt);
+					}
+				}
+			}
+			continue;
 		} else if (strcmp(cmd, "begin") == 0) {
 			if ( ! FileFS_ismount(ffs) ) {
 				printf("ERR: not mount data file.\n");
@@ -566,8 +773,8 @@ int main(int argc, char *argv[])
 			}
 			continue;
 		}
-		printf("  Unknown/Incorrect command: %s\n", cmd);
 		usage();
+		printf("  Unknown/Incorrect command: %s\n", cmd);
 	}
 	
 	FileFS_destroy(ffs);
