@@ -83,23 +83,22 @@ static void fun_ls(FileFS *ffs, char *path)
 	printf("  dir:%d, file:%d\n", n_dir, n_file);
 }
 
-static void fun_tree(FileFS *ffs)
+typedef struct Tree Tree;
+typedef struct Tree {
+	char name[15];
+	Tree *sub, *parent;
+	Tree *prev, *next;
+} Tree;
+static unsigned char search(FileFS *ffs, char *path, Tree *tree_parent, int *count, Tree **treehead)
 {
-	char *path = FileFS_getcwd(ffs);
-	int len = (int)strlen(path);
-	if ( len < 1 ) return;
-	
 	char *sol_path;
 	FFS_DIR *dirp;
 	struct FFS_dirent *dir;
-
-	int n_dir=0, n_file = 0;
+	Tree *tree, *tree_prev = NULL, *tree1 = NULL;
+	int dircount = 0;
 	
-	if ( NULL == (dirp = FileFS_opendir(ffs, path, &sol_path)) ) {
-		printf("path ERR\n");
-		return;
-	}
-	printf("%s\n", sol_path);
+	printf("search path:%s\n", FileFS_getcwd(ffs));
+	if ( NULL == (dirp = FileFS_opendir(ffs, path, &sol_path)) ) return 0;
 	while (1) {
 		dir = FileFS_readdir(ffs, dirp);
 		if ( dir == NULL ) break; // 当前目录为空
@@ -113,12 +112,153 @@ static void fun_tree(FileFS *ffs)
 		
 		// dir
 		if ( dir->d_type == FFS_DT_DIR ) {
-			printf(" |_%s\n", dir->d_name);
-			n_dir++;
+			// printf(" |_%s\n", dir->d_name);
+			tree = (Tree*)malloc(sizeof(Tree));
+			if ( tree == NULL ) {
+				printf("malloc err\n");
+				exit(0);
+			}
+			if ( tree1 == NULL ) tree1 = tree;
+			memset(tree, 0, sizeof(Tree));
+			strcpy(tree->name, dir->d_name);
+			tree->parent = tree_parent;
+			tree->prev = tree_prev;
+			if ( tree_prev != NULL ) tree_prev->next = tree;
+			//if ( treehead == NULL ) treehead = tree;
+			tree_prev = tree;
+			dircount++;
 			continue;
 		}
 	}
 	FileFS_closedir(ffs, dirp);
+	
+	*count = dircount;
+	*treehead = tree1;
+	return 1;
+}
+static void fun_tree(FileFS *ffs)
+{
+	char *path = FileFS_getcwd(ffs);
+	int len = (int)strlen(path);
+	if ( len < 1 ) return;
+	
+	char *path_root = strdup(path);
+	
+	Tree *treehead = NULL, *tree, *tree_parent;
+	int dircount;
+	Tree *tree_sub;
+
+	tree_parent = NULL;
+	if ( ! search(ffs, path, tree_parent, &dircount, &tree) ) {
+		free(path_root);
+		return;
+	}
+	treehead = tree;
+	unsigned char flag;
+	while (1) {
+		if ( dircount == 0 ) break;
+		FileFS_chdir(ffs, tree->name);
+		tree_parent = tree;
+		if ( ! search(ffs, ".", tree_parent, &dircount, &tree) ) {
+			free(path_root);
+			return;
+		}
+		tree_parent->sub = tree;
+		if ( dircount > 0 ) continue;
+		
+		// dircount == 0;
+		tree = tree_parent;
+		FileFS_chdir(ffs, "..");
+		flag = 0;
+		while (1) {
+			if ( tree->next != NULL ) {
+				tree = tree->next;
+				break;
+			}
+
+			if (tree->parent == NULL) {
+				flag = 1;
+				break;
+			}
+			tree = tree->parent;
+			FileFS_chdir(ffs, "..");
+		}
+		if ( flag == 1 ) break;
+		dircount = 1;
+	}
+	
+	// show tree
+	char space[1024];
+	memset(space, 0, 1024);
+	tree = treehead;
+	if ( tree == NULL ) {
+		free(path_root);
+		return;
+	}
+	tree_parent = NULL;
+	while (1) {
+		printf("%s|_%s\n", space, tree->name);
+		if ( tree->sub != NULL ) {
+			tree = tree->sub;
+			strcat(space, "| ");
+			continue;
+		}
+		if ( tree->next != NULL ) {
+			tree = tree->next;
+			continue;
+		}
+		flag = 0;
+		while (1) {
+			if ( tree->parent == NULL ) {
+				flag = 1;
+				break;
+			}
+			tree_sub = tree;
+			tree = tree->parent;
+			if ( space[0] != 0 ) space[strlen(space)-1] = 0;
+			if ( space[0] != 0 ) space[strlen(space)-1] = 0;
+			if ( tree->next != NULL ) {
+				tree = tree->next;
+				break;
+			}
+		}
+		if ( flag == 1 ) break;
+	}
+	
+	// free tree
+	tree = treehead;
+	if ( tree == NULL ) {
+		free(path_root);
+		return;
+	}
+	tree_parent = NULL;
+	while (1) {
+		if ( tree->sub != NULL ) {
+			tree = tree->sub;
+			continue;
+		}
+		if ( tree->next != NULL ) {
+			tree = tree->next;
+			continue;
+		}
+		flag = 0;
+		while (1) {
+			if ( tree->parent == NULL ) {
+				flag = 1;
+				break;
+			}
+			tree_sub = tree;
+			tree = tree->parent;
+			free(tree_sub);
+			if ( tree->next != NULL ) {
+				tree = tree->next;
+				break;
+			}
+		}
+		if ( flag == 1 ) break;
+	}
+	
+	free(path_root);
 }
 
 static void fun_fwrite(FileFS *ffs, char *filename, char *content, char *mode)
@@ -214,7 +354,7 @@ static void fun_in_cp(FileFS *ffs, char *from_out, char *to_in)
 	int len;
 	
 	while (1) {
-		len = fread(buf, 1, 1024, fp);
+		len = (int)fread(buf, 1, 1024, fp);
 		if ( len != 1024 ) {
 			if ( len > 0 ) {
 				FileFS_fwrite(ffs, buf, 1, len, ffp);
@@ -247,7 +387,7 @@ static void fun_out_cp(FileFS *ffs, char *from_in, char *to_out)
 	int len;
 	
 	while (1) {
-		len = FileFS_fread(ffs, buf, 1, 1024, ffp);
+		len = (int)FileFS_fread(ffs, buf, 1, 1024, ffp);
 		if ( len != 1024 ) {
 			if ( len > 0 ) {
 				fwrite(buf, 1, len, fp);
@@ -281,7 +421,7 @@ static void fun_cp(FileFS *ffs, char *from, char *to)
 	//int n = 0, loop=0;
 	
 	while (1) {
-		len = FileFS_fread(ffs, buf, 1, 1024, ffp);
+		len = (int)FileFS_fread(ffs, buf, 1, 1024, ffp);
 		if ( len != 1024 ) {
 			if ( len > 0 ) {
 				FileFS_fwrite(ffs, buf, 1, len, fp);
