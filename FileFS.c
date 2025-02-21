@@ -1,14 +1,3 @@
-/*----------------------------------------------------------------------------/
-/  FileFS - Implement a virtual file system within a single file R1.0         /
-/-----------------------------------------------------------------------------/
-/
-/ Copyright (C) 2025, cyantree, all right reserved.
-/
-/ mail: cyantree.guo@gmail.com
-/ QQ: 9234933
-/
-/----------------------------------------------------------------------------*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,6 +118,10 @@ typedef struct TMP {
 	int pwd_size;
 	unsigned int pwd_blockindex;
 	
+	char *home_pwd;
+	int home_pwd_size;
+	unsigned int home_pwd_blockindex;
+	
 	// 4b(blockindex) + 512b(block)
 	FILE *fp_cp, *fp_add;
 	
@@ -151,6 +144,10 @@ typedef struct FileFS {
 	char *pwd_tmp;
 	int pwd_tmp_size;
 	unsigned int pwd_blockindex; // 当前目录所在的block
+	
+	char *home_pwd;
+	int home_pwd_size;
+	unsigned int home_pwd_blockindex;
 } FileFS;
 
 // ==========================================
@@ -452,6 +449,16 @@ unsigned char FileFS_mount(FileFS *ffs, const char *filename)
 	ffs->pwd_size = 2;
 	ffs->pwd_blockindex = 1;
 	
+	if ( ffs->home_pwd != NULL ) free(ffs->home_pwd);
+	ffs->home_pwd = (char*)malloc(2);
+	if ( ffs->home_pwd == NULL ) {
+		ffs_fclose(ffs->fp);
+		return 0;
+	}
+	sprintf(ffs->home_pwd, "/");
+	ffs->home_pwd_size = 2;
+	ffs->home_pwd_blockindex = 1;
+	
 	// move data of fn-j to fn;
 	j2ffs(ffs);
 	
@@ -488,6 +495,11 @@ void FileFS_umount(FileFS *ffs)
 		ffs->tmp.pwd = NULL;
 	}
 	ffs->tmp.pwd_size = 0;
+	if ( ffs->tmp.home_pwd != NULL ) {
+		free(ffs->tmp.home_pwd);
+		ffs->tmp.home_pwd = NULL;
+	}
+	ffs->tmp.home_pwd_size = 0;
 	
 	if ( ffs->pwd != NULL ) {
 		free(ffs->pwd);
@@ -495,6 +507,12 @@ void FileFS_umount(FileFS *ffs)
 	}
 	ffs->pwd_size = 0;
 	ffs->pwd_blockindex = 0;
+	if ( ffs->home_pwd != NULL ) {
+		free(ffs->home_pwd);
+		ffs->home_pwd = NULL;
+	}
+	ffs->home_pwd_size = 0;
+	ffs->home_pwd_blockindex = 0;
 	if ( ffs->pwd_tmp != NULL ) {
 		free(ffs->pwd_tmp);
 		ffs->pwd_tmp = NULL;
@@ -1211,6 +1229,10 @@ FFS_FILE *FileFS_fopen(FileFS *ffs, const char *filename, const char *mode)
 	if ( filename[0] == '/' ) {
 		blockindex = 1; // root
 		start = 1;
+	} else if ( filename[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
+		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
 		else blockindex = ffs->tmp.pwd_blockindex;
@@ -1278,15 +1300,13 @@ size_t FileFS_fread(FileFS *ffs, void *ptr, size_t size, size_t nmemb, FFS_FILE 
 		// get nextindex;
 		memcpy(b4, block + 4, 4);
 		nextindex = B4toU32(b4);
+		// printf("posblockindex:%d, pos_offset:%d, next index:%d\n", stream->pos_blockindex, stream->pos_offset, nextindex);
 
-		if ( stream->pos_offset == BLOCKSIZE ) {
-			//blockindex = nextindex;
-			//if ( blockindex == 0 ) return k;
-			stream->pos_blockindex = blockindex;
-			stream->pos_offset = BLOCK_HEAD;
-		}
-		
+		// printf("fread stop blockindex:%d\n", stream->file_stop_blockindex);
 		if ( blockindex == stream->file_stop_blockindex ) {
+			// printf("fread start stop blockindex, offset:%d %d %d\n", 
+			//	stream->file_start_blockindex, stream->file_stop_blockindex, stream->file_offset);
+			
 			n = stream->file_offset - stream->pos_offset;
 			if ( n <= 0 ) return k;
 			if ( wannasize - k < n ) n = wannasize - k;
@@ -1306,8 +1326,13 @@ size_t FileFS_fread(FileFS *ffs, void *ptr, size_t size, size_t nmemb, FFS_FILE 
 		stream->pos_blockindex = blockindex;
 		stream->pos_offset += n;
 		stream->pos += n;
+		if ( stream->pos_offset == BLOCKSIZE ) {
+			stream->pos_blockindex = nextindex;
+			stream->pos_offset = BLOCK_HEAD;
+		}
 		if ( k >= wannasize ) return k;
 		
+		// printf("blockindex:%d, nextindex:%d\n", blockindex, nextindex);
 		blockindex = nextindex;
 		if (nextindex == 0) return k;
 	}
@@ -1742,6 +1767,10 @@ static unsigned char FileFS_stat(FileFS *ffs, const char *name)
 	if ( name[0] == '/' ) {
 		blockindex = 1; // root
 		start = 1;
+	} else if ( name[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
+		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
 		else blockindex = ffs->tmp.pwd_blockindex;
@@ -1842,6 +1871,10 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 	unsigned int blockindex;
 	if ( filename[0] == '/' ) {
 		blockindex = 1; // root
+		start = 1;
+	} else if ( filename[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
 		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
@@ -2472,6 +2505,10 @@ int FileFS_rename(FileFS *ffs, const char *old_name, const char *new_name)
 	if ( old_name[0] == '/' ) {
 		blockindex = 1; // root
 		start = 1;
+	} else if ( old_name[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
+		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
 		else blockindex = ffs->tmp.pwd_blockindex;
@@ -2517,6 +2554,10 @@ int FileFS_rename(FileFS *ffs, const char *old_name, const char *new_name)
 	len = (int)strlen(new_name);
 	if ( new_name[0] == '/' ) {
 		blockindex = 1; // root
+		start = 1;
+	} else if ( new_name[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
 		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
@@ -2573,6 +2614,10 @@ int FileFS_move(FileFS *ffs, const char *from_name, const char *to_path)
 	if ( from_name[0] == '/' ) {
 		blockindex = 1; // root
 		start = 1;
+	} else if ( from_name[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
+		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
 		else blockindex = ffs->tmp.pwd_blockindex;
@@ -2618,6 +2663,10 @@ int FileFS_move(FileFS *ffs, const char *from_name, const char *to_path)
 	len = (int)strlen(to_path);
 	if ( to_path[0] == '/' ) {
 		blockindex = 1; // root
+		start = 1;
+	} else if ( to_path[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
 		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
@@ -2677,6 +2726,10 @@ int FileFS_copy(FileFS *ffs, const char *from_filename, const char *to_filename)
 	if ( from_filename[0] == '/' ) {
 		blockindex = 1; // root
 		start = 1;
+	} else if ( from_filename[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
+		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
 		else blockindex = ffs->tmp.pwd_blockindex;
@@ -2721,6 +2774,10 @@ int FileFS_copy(FileFS *ffs, const char *from_filename, const char *to_filename)
 	if ( to_filename[len-1] == '/' ) return 3; // 尾部有'/'，说明to_filename是目录
 	if ( to_filename[0] == '/' ) {
 		blockindex = 1; // root
+		start = 1;
+	} else if ( to_filename[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
 		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
@@ -2778,7 +2835,7 @@ int FileFS_copy(FileFS *ffs, const char *from_filename, const char *to_filename)
 	from_offset = B2toU16(b2);
 	
 	// 搜索block，检查是否有名称相同的目录或文件
-	unsigned char from_file_start_blockindex, from_file_stop_blockindex;
+	unsigned int from_file_start_blockindex, from_file_stop_blockindex;
 	unsigned short from_file_offset;
 	unsigned char flag = 0, u;
 	index = from_blockindex;
@@ -2804,6 +2861,7 @@ int FileFS_copy(FileFS *ffs, const char *from_filename, const char *to_filename)
 			from_file_stop_blockindex = B4toU32(b4);
 			memcpy(b2, from_block+k, 2);
 			from_file_offset = B2toU16(b2);
+			// printf("from_file, start, stop index, offset:%d %d %d\n", from_file_start_blockindex, from_file_stop_blockindex, from_file_offset);
 			
 			flag = 1;
 			break;
@@ -2966,6 +3024,8 @@ int FileFS_copy(FileFS *ffs, const char *from_filename, const char *to_filename)
 			U32toB4(prev_index, b4);
 			memcpy(new_block + 8, b4, 4);
 
+			// printf("from index:%d\n", from_index);
+			//if ( from_next_index == 0 ) {
 			if ( from_index == from_file_stop_blockindex ) {
 				to_file_stop_blockindex = new_blockindex;
 				if ( ! writeblock(ffs, new_blockindex, new_block) ) {
@@ -3094,6 +3154,15 @@ unsigned char FileFS_chdir(FileFS *ffs, const char *pathname)
 		blockindex = 1; // root
 		start = 1;
 		if ( ! InitPwdtmp(ffs, "/") ) return 0;
+	} else if ( pathname[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) {
+			blockindex = ffs->home_pwd_blockindex; // pwd
+			if ( ! InitPwdtmp(ffs, ffs->home_pwd) ) return 0;
+		} else {
+			blockindex = ffs->tmp.home_pwd_blockindex;
+			if ( ! InitPwdtmp(ffs, ffs->tmp.home_pwd) ) return 0;
+		}
+		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) {
 			blockindex = ffs->pwd_blockindex; // pwd
@@ -3164,11 +3233,111 @@ unsigned char FileFS_chdir(FileFS *ffs, const char *pathname)
 char *FileFS_getcwd(FileFS *ffs)
 {
 	if ( ffs == NULL ) return "";
+	if ( ffs->fp == NULL ) return "";
 	
 	if ( ffs->tmp.state == 0 ) {
 		return ffs->pwd;
 	} else {
 		return ffs->tmp.pwd;
+	}
+}
+
+unsigned char FileFS_sethome(FileFS *ffs, const char *pathname)
+{
+	if ( ffs == NULL ) return 0;
+	if ( ffs->fp == NULL ) return 0;
+	
+	int i, start, len = (int)strlen(pathname);
+	unsigned int blockindex;
+	if ( pathname[0] == '/' ) {
+		blockindex = 1; // root
+		start = 1;
+		if ( ! InitPwdtmp(ffs, "/") ) return 0;
+	} else if ( pathname[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) {
+			blockindex = ffs->home_pwd_blockindex; // pwd
+			if ( ! InitPwdtmp(ffs, ffs->home_pwd) ) return 0;
+		} else {
+			blockindex = ffs->tmp.home_pwd_blockindex;
+			if ( ! InitPwdtmp(ffs, ffs->tmp.home_pwd) ) return 0;
+		}
+		start = 1;
+	} else {
+		if ( ffs->tmp.state == 0 ) {
+			blockindex = ffs->pwd_blockindex; // pwd
+			if ( ! InitPwdtmp(ffs, ffs->pwd) ) return 0;
+		} else {
+			blockindex = ffs->tmp.pwd_blockindex; // pwd
+			if ( ! InitPwdtmp(ffs, ffs->tmp.pwd) ) return 0;
+		}
+		start = 0;
+	}
+	
+	void *p;
+	char s[BLOCK_NAME_MAXSIZE + 2];
+	int slen = 0;
+	unsigned int index;
+	for (i=start; i<len; i++) {
+		if ( pathname[i] == '/' ) {
+			if ( slen == 0 ) continue;
+			s[slen] = 0;
+			index = findPathBlockindex(ffs, blockindex, s);
+			if ( index < 1 ) return 0;
+			blockindex = index;
+			slen = 0;
+			
+			if ( ! AddToPwdtmp(ffs, len, s) ) return 0;
+			continue;
+		}
+		s[slen] = pathname[i];
+		slen++;
+		if ( slen > BLOCK_NAME_MAXSIZE ) return 0;
+	}
+	if ( slen > 0 ) {
+		s[slen] = 0;
+		index = findPathBlockindex(ffs, blockindex, s);
+		if ( index < 1 ) return 0;
+		blockindex = index;
+		
+		if ( ! AddToPwdtmp(ffs, len, s) ) return 0;
+	}
+	
+	if ( ffs->tmp.state == 0 ) {
+		len = (int)strlen(ffs->pwd_tmp) + 1;
+		if ( len > ffs->home_pwd_size ) {
+			p = realloc(ffs->home_pwd, len);
+			if ( p == NULL ) return 0;
+			ffs->home_pwd = (char*)p;
+			ffs->home_pwd_size = len;
+		}
+		strcpy(ffs->home_pwd, ffs->pwd_tmp);
+		
+		ffs->home_pwd_blockindex = blockindex;
+	} else {
+		len = (int)strlen(ffs->pwd_tmp) + 1;
+		if ( len > ffs->tmp.home_pwd_size ) {
+			p = realloc(ffs->tmp.home_pwd, len);
+			if ( p == NULL ) return 0;
+			ffs->tmp.home_pwd = (char*)p;
+			ffs->tmp.home_pwd_size = len;
+		}
+		strcpy(ffs->tmp.home_pwd, ffs->pwd_tmp);
+		
+		ffs->tmp.home_pwd_blockindex = blockindex;
+	}
+	
+	return 1;
+}
+
+char *FileFS_gethome(FileFS *ffs)
+{
+	if ( ffs == NULL ) return "";
+	if ( ffs->fp == NULL ) return "";
+	
+	if ( ffs->tmp.state == 0 ) {
+		return ffs->home_pwd;
+	} else {
+		return ffs->tmp.home_pwd;
 	}
 }
 
@@ -3444,6 +3613,10 @@ int FileFS_mkdir(FileFS *ffs, const char *pathname)
 	if ( pathname[0] == '/' ) {
 		blockindex = 1; // root
 		start = 1;
+	} else if ( pathname[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
+		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
 		else blockindex = ffs->tmp.pwd_blockindex;
@@ -3549,6 +3722,10 @@ int FileFS_rmdir(FileFS *ffs, const char *pathname)
 	if ( pathname[0] == '/' ) {
 		blockindex = 1; // root
 		start = 1;
+	} else if ( pathname[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) blockindex = ffs->home_pwd_blockindex; // pwd
+		else blockindex = ffs->tmp.home_pwd_blockindex;
+		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) blockindex = ffs->pwd_blockindex; // pwd
 		else blockindex = ffs->tmp.pwd_blockindex;
@@ -3630,7 +3807,7 @@ int FileFS_rmdir(FileFS *ffs, const char *pathname)
 	// 搜索block，检查是否有名称相同的目录或文件
 	unsigned int subdirblockindex;
 	unsigned char subdirblock[BLOCKSIZE];
-	unsigned char subdir_start_blockindex, subdir_stop_blockindex;
+	unsigned int subdir_start_blockindex, subdir_stop_blockindex;
 	unsigned short subdir_offset;
 	
 	unsigned short item_offset = 0;
@@ -3830,6 +4007,15 @@ FFS_DIR *FileFS_opendir(FileFS *ffs, const char *path, char **absolute_path)
 		blockindex = 1; // root
 		start = 1;
 		if ( ! InitPwdtmp(ffs, "/") ) return 0;
+	} else if ( path[0] == '~' ) { // home
+		if ( ffs->tmp.state == 0 ) {
+			blockindex = ffs->home_pwd_blockindex; // pwd
+			if ( ! InitPwdtmp(ffs, ffs->home_pwd) ) return 0;
+		} else {
+			blockindex = ffs->tmp.home_pwd_blockindex;
+			if ( ! InitPwdtmp(ffs, ffs->tmp.home_pwd) ) return 0;
+		}
+		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) {
 			blockindex = ffs->pwd_blockindex; // pwd
@@ -4142,6 +4328,20 @@ unsigned char FileFS_commit(FileFS *ffs)
 	strcpy(ffs->pwd, ffs->tmp.pwd);
 	ffs->pwd_blockindex = ffs->tmp.pwd_blockindex;
 	
+	len = (int)strlen(ffs->tmp.home_pwd) + 1;
+	if ( len > ffs->home_pwd_size ) {
+		p = realloc(ffs->home_pwd, len);
+		if ( p == NULL ) {
+			sprintf(ffs->home_pwd, "/");
+			tmpstop(ffs);
+			return 1;
+		}
+		ffs->home_pwd = (char*)p;
+		ffs->home_pwd_size = len;
+	}
+	strcpy(ffs->home_pwd, ffs->tmp.home_pwd);
+	ffs->home_pwd_blockindex = ffs->tmp.home_pwd_blockindex;
+	
 	tmpstop(ffs);
 	return 1;
 }
@@ -4184,6 +4384,16 @@ static unsigned char tmpstart(FileFS *ffs, unsigned char state)
 	}
 	strcpy(ffs->tmp.pwd, ffs->pwd);
 	ffs->tmp.pwd_blockindex = ffs->pwd_blockindex;
+	
+	len = (int)strlen(ffs->home_pwd) + 1;
+	if ( len > ffs->tmp.home_pwd_size ) {
+		p = realloc(ffs->tmp.home_pwd, len);
+		if ( p == NULL ) return 0;
+		ffs->tmp.home_pwd = (char*)p;
+		ffs->tmp.home_pwd_size = len;
+	}
+	strcpy(ffs->tmp.home_pwd, ffs->home_pwd);
+	ffs->tmp.home_pwd_blockindex = ffs->home_pwd_blockindex;
 	
 	ffs->tmp.cp_size = 0;
 	ffs->tmp.state = state;
