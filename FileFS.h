@@ -1,14 +1,4 @@
-/*----------------------------------------------------------------------------/
-/  FileFS - Implement a virtual file system within a single file R1.0         /
-/-----------------------------------------------------------------------------/
-/
-/ Copyright (C) 2025, cyantree, all right reserved.
-/
-/ mail: cyantree.guo@gmail.com
-/ QQ: 9234933
-/
-/----------------------------------------------------------------------------*/
-
+// FileFS
 #ifndef FileFS_H_
 #define FileFS_H_
 
@@ -86,6 +76,8 @@ int FileFS_copy(FileFS *ffs, const char *from_filename, const char *to_filename)
 // return: 0-err,1-ok
 unsigned char FileFS_chdir(FileFS *ffs, const char *pathname);
 char *FileFS_getcwd(FileFS *ffs);
+unsigned char FileFS_sethome(FileFS *ffs, const char *pathname); // ~
+char *FileFS_gethome(FileFS *ffs);
 // return: 0-ok,1-gen err,2-name>limit(14byte),3-path existed,4-exist same name file
 int FileFS_mkdir(FileFS *ffs, const char *pathname);
 // return: 0-ok,1-gen err,2-sub dir not empty,3-path not existed,4-name>limit(14byte)
