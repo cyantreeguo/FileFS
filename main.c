@@ -19,6 +19,7 @@ void usage(void)
 	printf("\tusermod path\n");
 	printf("\tmkdir path\n");
 	printf("\trm path\n");
+	printf("\tfrm path(rmdir path recursively)\n");
 	printf("\techo filename content\n");
 	printf("\tadd filename content\n");
 	printf("\tow filename content (overwrite file)\n");
@@ -83,6 +84,82 @@ static void fun_ls(FileFS *ffs, char *path)
 	printf("  dir:%d, file:%d\n", n_dir, n_file);
 }
 
+static unsigned char ffs_rmdir(FileFS *ffs, char *path)
+{
+	if (path == NULL) return 0;
+	int len = (int)strlen(path);
+	if (len < 1) return 0;
+
+	char *srcpath = NULL, *runpath = NULL, c;
+	int runlen = 0;
+	FFS_dirent *dir;
+	FFS_DIR *dirp;
+	int i;
+	char *filename = NULL;
+
+	if ( ! FileFS_chdir(ffs, path) ) return 0;
+	
+	char *rootpath;
+	char *s = FileFS_getcwd(ffs);
+	rootpath = (char*)malloc((int)strlen(s) + 1);
+	if ( rootpath == NULL ) return 0;
+	strcpy(rootpath, s);
+	
+	char *abs_path, sub_dir[20];
+	unsigned char path_empty;
+	while (1) {
+		path_empty = 1;
+		
+		dirp = FileFS_opendir(ffs, ".", &abs_path);
+		if (dirp == NULL) return 0;
+		// printf("search path:%s\n", abs_path);
+		while (1) {
+			dir = FileFS_readdir(ffs, dirp);
+			if (dir == NULL) break;
+			
+			if ( strcmp(dir->d_name, ".") == 0 ) continue;
+			if ( strcmp(dir->d_name, "..") == 0 ) continue;
+			
+			if ( path_empty > 0 ) path_empty = 2;
+			if ( dir->d_type == FFS_DT_FILE ) {
+				FileFS_remove(ffs, dir->d_name);
+				// printf("remove %s\n", dir->d_name);
+			} else {
+				// printf("rmdir %s\n", dir->d_name);
+				if ( 0 != FileFS_rmdir(ffs, dir->d_name) ) {
+					if ( path_empty > 0 ) {
+						path_empty = 0;
+						strcpy(sub_dir, dir->d_name);
+					}
+				}
+			}
+		}
+		FileFS_closedir(ffs, dirp);
+
+		if ( path_empty == 0 ) {
+			if ( ! FileFS_chdir(ffs, sub_dir) ) return 0;
+		} else if ( path_empty == 1 ) {
+			s = FileFS_getcwd(ffs);
+			if ( strcmp(s, rootpath) == 0 ) {
+				if ( ! FileFS_chdir(ffs, "..") ) return 0;
+				break;
+			} else {
+				if ( ! FileFS_chdir(ffs, "..") ) return 0;
+			}
+		}
+	}
+	
+	free(rootpath);
+	
+	int r = FileFS_rmdir(ffs, path);
+	if ( 0 == r || 3 == r/*path not exist*/ ) return 1;
+	return 0;
+}
+static void fun_forcerm(FileFS *ffs, char *path)
+{
+	if ( ! ffs_rmdir(ffs, path) ) printf("rmdir err\n");
+}
+
 typedef struct Tree Tree;
 typedef struct Tree {
 	char name[15];
@@ -97,7 +174,7 @@ static unsigned char search(FileFS *ffs, char *path, Tree *tree_parent, int *cou
 	Tree *tree, *tree_prev = NULL, *tree1 = NULL;
 	int dircount = 0;
 	
-	printf("search path:%s\n", FileFS_getcwd(ffs));
+	// printf("search path:%s\n", FileFS_getcwd(ffs));
 	if ( NULL == (dirp = FileFS_opendir(ffs, path, &sol_path)) ) return 0;
 	while (1) {
 		dir = FileFS_readdir(ffs, dirp);
@@ -632,6 +709,19 @@ int main(int argc, char *argv[])
 						} else if ( r == 4 ) {
 							printf("ERR: name to long [%s].\n", path);
 						}
+					}
+					continue;
+				}
+			}
+		} else if (strncmp(cmd, "frm", 3) == 0) {
+			if (cmd[3] == ' ') {
+				path = cmd + 4;
+				while (*path == ' ') path++;
+				if (*path != '\0') {
+					if ( ! FileFS_ismount(ffs) ) {
+						printf("ERR: not mount data file.\n");
+					} else {
+						fun_forcerm(ffs, path);
 					}
 					continue;
 				}
