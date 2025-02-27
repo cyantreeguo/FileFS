@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "FileFS.h"
 
@@ -18,12 +19,13 @@ void usage(void)
 	printf("\ttree\n");
 	printf("\tusermod path\n");
 	printf("\tmkdir path\n");
-	printf("\trm path\n");
+	printf("\trm name(path or file)\n");
 	printf("\tfrm path(rmdir path recursively)\n");
 	printf("\techo filename content\n");
 	printf("\tadd filename content\n");
 	printf("\tow filename content (overwrite file)\n");
-	printf("\tcat filename\n");
+	printf("\tcat filename(txt mode)\n");
+	printf("\tbin filename(bin mode)\n");
 	printf("\tfilesize filename\n");
 	printf("\tseek\n");
 	printf("\tdel filename\n");
@@ -375,6 +377,39 @@ static void fun_cat(FileFS *ffs, char *filename)
 	FileFS_fclose(ffs, fp);
 }
 
+static void fun_bin(FileFS *ffs, char *filename)
+{
+	FFS_FILE *fp = FileFS_fopen(ffs, filename, "r");
+	if ( fp == NULL ) {
+		printf("fopen %s err, not exist\n", filename);
+		return;
+	}
+	
+	unsigned char data[128];
+	char txt[128];
+	int r, n=0, i;
+	
+	while (1) {
+		memset(txt, 0, 128);	
+		r = (int)FileFS_fread(ffs, data, 1, 32, fp);
+		n += r;	
+		if ( r > 0 ) {
+			for (i=0; i<r; i++) {
+				printf("%.2X ", data[i]);
+				if ( i == 15 ) printf(" ");
+				if ( isprint(data[i]) ) txt[i] = (char)data[i];
+				else txt[i] = '.';
+			}
+			printf("  %s\n", txt);
+		} else {
+			break;
+		}
+	}
+	printf("\nread %d from %s\n", n, filename);
+	
+	FileFS_fclose(ffs, fp);
+}
+
 static void fun_filesize(FileFS *ffs, char *filename)
 {
 	FFS_FILE *fp = FileFS_fopen(ffs, filename, "a+");
@@ -415,9 +450,12 @@ static void fun_in_cp(FileFS *ffs, char *from_out, char *to_in)
 {
 	FILE *fp;
 	
+	FileFS_begin(ffs);
+	
 	fp = fopen(from_out, "rb");
 	if ( fp == NULL ) {
 		printf("err: can not read from_out(%s)\n", from_out);
+		FileFS_rollback(ffs);
 		return;
 	}
 	
@@ -443,6 +481,8 @@ static void fun_in_cp(FileFS *ffs, char *from_out, char *to_in)
 	
 	FileFS_fclose(ffs, ffp);
 	fclose(fp);
+	
+	FileFS_commit(ffs);
 }
 
 static void fun_out_cp(FileFS *ffs, char *from_in, char *to_out)
@@ -698,16 +738,31 @@ int main(int argc, char *argv[])
 					if ( ! FileFS_ismount(ffs) ) {
 						printf("ERR: not mount data file.\n");
 					} else {
-						r = FileFS_rmdir(ffs, path);
-						// return: 0-ok,1-gen err,2-sub dir not empty,3-dirtroy not existed,4-name>limit(14byte)
-						if ( r == 1 ) {
-							printf("rmdir %s ERR\n", path);
-						} else if ( r == 2 ) {
-							printf("ERR: sub path not empty [%s].\n", path);
-						} else if ( r == 3 ) {
-							printf("ERR: path not exist [%s].\n", path);
-						} else if ( r == 4 ) {
-							printf("ERR: name to long [%s].\n", path);
+						if ( FileFS_file_exist(ffs, path) ) {
+							r = FileFS_remove(ffs, path);
+							if ( r == 1 ) {
+								printf("remove %s ERR\n", fn);
+							} else if ( r == 2 ) {
+								printf("ERR: file not exist [%s].\n", fn);
+							} else if ( r == 3 ) {
+								printf("ERR: dir not exist [%s].\n", fn);
+							} else if ( r == 4 ) {
+								printf("ERR: name to long [%s].\n", fn);
+							} else if ( r == 5 ) {
+								printf("ERR: name format err [%s].\n", fn);
+							}
+						} else {
+							r = FileFS_rmdir(ffs, path);
+							// return: 0-ok,1-gen err,2-sub dir not empty,3-dirtroy not existed,4-name>limit(14byte)
+							if ( r == 1 ) {
+								printf("rmdir %s ERR\n", path);
+							} else if ( r == 2 ) {
+								printf("ERR: sub path not empty [%s].\n", path);
+							} else if ( r == 3 ) {
+								printf("ERR: path not exist [%s].\n", path);
+							} else if ( r == 4 ) {
+								printf("ERR: name to long [%s].\n", path);
+							}
 						}
 					}
 					continue;
@@ -792,6 +847,19 @@ int main(int argc, char *argv[])
 						printf("ERR: not mount data file.\n");
 					} else {
 						fun_cat(ffs, fn);
+					}
+					continue;
+				}
+			}
+		} else if (strncmp(cmd, "bin", 3) == 0) {
+			if (cmd[3] == ' ') {
+				fn = cmd + 4;
+				while (*fn == ' ') fn++;
+				if (*fn != '\0') {
+					if ( ! FileFS_ismount(ffs) ) {
+						printf("ERR: not mount data file.\n");
+					} else {
+						fun_bin(ffs, fn);
 					}
 					continue;
 				}
