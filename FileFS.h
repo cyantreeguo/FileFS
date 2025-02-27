@@ -1,4 +1,14 @@
-// FileFS
+/*----------------------------------------------------------------------------/
+/  FileFS - Implement a virtual file system within a single file R1.0         /
+/-----------------------------------------------------------------------------/
+/
+/ Copyright (C) 2025, cyantree, all right reserved.
+/
+/ mail: cyantree.guo@gmail.com
+/ QQ: 9234933
+/
+/----------------------------------------------------------------------------*/
+
 #ifndef FileFS_H_
 #define FileFS_H_
 

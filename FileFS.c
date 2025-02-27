@@ -1,3 +1,14 @@
+/*----------------------------------------------------------------------------/
+/  FileFS - Implement a virtual file system within a single file R1.0         /
+/-----------------------------------------------------------------------------/
+/
+/ Copyright (C) 2025, cyantree, all right reserved.
+/
+/ mail: cyantree.guo@gmail.com
+/ QQ: 9234933
+/
+/----------------------------------------------------------------------------*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -4097,8 +4108,15 @@ FFS_dirent *FileFS_readdir(FileFS *ffs, FFS_DIR *dir)
 	unsigned char state, dir_file;
 	int k;
 	char *s;
-	unsigned char b4[4];
+	unsigned char b4[4], b2[2];
 	unsigned int dirblockindex;
+	
+	// read block again
+	if ( ! readblock(ffs, dir->blockindex, dir->block) ) return NULL;
+	memcpy(b4, dir->block+(12+1+14+4), 4);
+	dir->stop_blockindex = B4toU32(b4);
+	memcpy(b2, dir->block+(12+1+14+4+4), 2);
+	dir->offset = B2toU16(b2);
 	
 	k = BLOCK_HEAD + dir->searchindex * 25;
 	if ( dir->blockindex == dir->stop_blockindex && k+1 >= dir->offset ) return NULL; // end;
