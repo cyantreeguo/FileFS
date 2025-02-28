@@ -31,8 +31,13 @@
 static void ffs_fsetpos(FILE *fp, unsigned long long pos)
 {
 	fpos_t p;
-#if defined(linux) || defined(__linux) || defined(__linux__)	
+#if defined(linux) || defined(__linux) || defined(__linux__)
+#if defined(__GLIBC__)
 	p.__pos = pos;
+#else
+	// musl
+	p.__lldata = pos;
+#endif
 #else
 	p = pos;
 #endif
@@ -1397,7 +1402,7 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 		memcpy(dir_block + stream->dir_offset-2, b2, 2); // file_offset
 		stream->file_start_blockindex = new_blockindex;
 		stream->file_stop_blockindex = new_blockindex;
-		stream->file_offset = 0;
+		stream->file_offset = BLOCK_HEAD;
 		stream->pos_blockindex = new_blockindex;
 		stream->pos_offset = BLOCK_HEAD;
 		stream->pos = 0;
@@ -1419,7 +1424,7 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 	
 	//printf("pos_blockindex:%d, pos_offset:%d\n", stream->pos_blockindex, stream->pos_offset);
 	
-	unsigned char flag;
+	unsigned char hasnewblock = 0;
 	while (1) {
 		if ( stream->pos_offset == BLOCKSIZE ) {
 			if ( next_blockindex == 0 ) {
@@ -1445,6 +1450,7 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 				memcpy(pos_block, new_block, BLOCKSIZE);
 				
 				next_blockindex = 0;
+				hasnewblock = 1;
 			} else {
 				if ( ! readblock(ffs, next_blockindex, pos_block) ) {
 					if ( ffs->tmp.state == 1 ) tmpstop(ffs);
@@ -1471,25 +1477,20 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 			stream->pos_offset += n;
 			stream->pos += n;
 			
-			flag = 0;
-			if ( stream->pos_blockindex > stream->file_stop_blockindex ) {
-				flag = 1;
-			} else {
-				if ( stream->pos_blockindex == stream->file_stop_blockindex && stream->pos_offset > stream->file_offset) flag = 1;
-			}
-			if ( flag ) {
+			if ( stream->pos_blockindex == stream->file_stop_blockindex && stream->pos_offset > stream->file_offset) hasnewblock = 1;
+			if ( hasnewblock == 1 ) {
 				if ( ! readblock(ffs, stream->dir_blockindex, dir_block) ) {
 					if ( ffs->tmp.state == 1 ) tmpstop(ffs);
 					return 0;
 				}
 				
-				stream->file_stop_blockindex = stream->pos_blockindex;
-				stream->file_offset = stream->pos_offset;
+				//stream->file_stop_blockindex = stream->pos_blockindex;
+				//stream->file_offset = stream->pos_offset;
 				
 				U32toB4(stream->pos_blockindex, b4);
-				memcpy(dir_block+stream->dir_offset-6, b4, 4);
+				memcpy(dir_block+stream->dir_offset-6, b4, 4); // file_stop_blockindex
 				U16toB2(stream->pos_offset, b2);
-				memcpy(dir_block+stream->dir_offset-2, b2, 2);
+				memcpy(dir_block+stream->dir_offset-2, b2, 2); // file_offset
 				if ( ! writeblock(ffs, stream->dir_blockindex, dir_block) ) {
 					if ( ffs->tmp.state == 1 ) tmpstop(ffs);
 					return 0;
@@ -1517,25 +1518,20 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 		stream->pos += n;
 		
 		if ( wannasize - cut == 0 ) {
-			flag = 0;
-			if ( stream->pos_blockindex > stream->file_stop_blockindex ) {
-				flag = 1;
-			} else {
-				if ( stream->pos_blockindex == stream->file_stop_blockindex && stream->pos_offset > stream->file_offset ) flag = 1;
-			}
-			if ( flag ) {
+			if ( stream->pos_blockindex == stream->file_stop_blockindex && stream->pos_offset > stream->file_offset ) hasnewblock = 1;
+			if ( hasnewblock == 1 ) {
 				if ( ! readblock(ffs, stream->dir_blockindex, dir_block) ) {
 					if ( ffs->tmp.state == 1 ) tmpstop(ffs);
 					return 0;
 				}
 				
-				stream->file_stop_blockindex = stream->pos_blockindex;
-				stream->file_offset = stream->pos_offset;
+				//stream->file_stop_blockindex = stream->pos_blockindex;
+				//stream->file_offset = stream->pos_offset;
 				
 				U32toB4(stream->pos_blockindex, b4);
-				memcpy(dir_block+stream->dir_offset-6, b4, 4);
+				memcpy(dir_block+stream->dir_offset-6, b4, 4); // file_stop_blockindex
 				U16toB2(stream->pos_offset, b2);
-				memcpy(dir_block+stream->dir_offset-2, b2, 2);
+				memcpy(dir_block+stream->dir_offset-2, b2, 2); // file_offset
 				if ( ! writeblock(ffs, stream->dir_blockindex, dir_block) ) {
 					if ( ffs->tmp.state == 1 ) tmpstop(ffs);
 					return 0;
@@ -2848,7 +2844,7 @@ int FileFS_copy(FileFS *ffs, const char *from_filename, const char *to_filename)
 	// 搜索block，检查是否有名称相同的目录或文件
 	unsigned int from_file_start_blockindex, from_file_stop_blockindex;
 	unsigned short from_file_offset;
-	unsigned char flag = 0, u;
+	unsigned char flag = 0;
 	index = from_blockindex;
 	while (1) {
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
@@ -4538,7 +4534,9 @@ static unsigned char readblock(FileFS *ffs, unsigned int blockindex, unsigned ch
 */
 static unsigned char writeblock(FileFS *ffs, unsigned int blockindex, unsigned char *block)
 {
-	//printf("writeblock: blockindex:%d\n", blockindex);
+	//if (blockindex == 0) {
+		//printf("writeblock: blockindex:%d\n", blockindex);
+	//}
 	if ( ffs->tmp.state == 0 ) {
 		//printf("1\n");
 		return 0;
