@@ -579,6 +579,7 @@ int main(int argc, char *argv[])
 	printf("Welcome to FileFS Browsing Shell v1.0\n");
 	while (!done) {
 		printf("$>");
+		fflush(stdout);
 		// if ( ! FileFS_ismount(ffs) ) printf("$>");
 		// else printf("%s>", FileFS_getcwd(ffs));
 		ret = scanf("%[^\n]", cmd);
