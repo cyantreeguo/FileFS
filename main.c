@@ -267,19 +267,41 @@ static void fun_tree(FileFS *ffs)
 	}
 	
 	// show tree
-	char space[1024];
-	memset(space, 0, 1024);
+	void *p;
+	char *space;
+	int space_size = 1024, space_used = 0;
+	space = (char*)malloc(space_size);
+	if ( space == NULL ) {
+		free(path_root);
+		return;
+	}
+	memset(space, 0, space_size);
 	tree = treehead;
 	if ( tree == NULL ) {
+		free(space);
 		free(path_root);
 		return;
 	}
 	tree_parent = NULL;
+	int leaf = 0;
 	while (1) {
+		if ( space_used + 16 > space_size ) {
+			p = realloc(space, space_size + 16);
+			if ( p == NULL ) {
+				free(space);
+				free(path_root);
+				return;
+			}
+			space = (char*)p;
+			memset(space + space_size, 0, 16);
+			space_size += 16;
+		}
 		printf("%s|_%s\n", space, tree->name);
+		leaf++;
 		if ( tree->sub != NULL ) {
 			tree = tree->sub;
 			strcat(space, "| ");
+			space_used += 2;
 			continue;
 		}
 		if ( tree->next != NULL ) {
@@ -294,8 +316,14 @@ static void fun_tree(FileFS *ffs)
 			}
 			tree_sub = tree;
 			tree = tree->parent;
-			if ( space[0] != 0 ) space[strlen(space)-1] = 0;
-			if ( space[0] != 0 ) space[strlen(space)-1] = 0;
+			if ( space[0] != 0 ) {
+				space[space_used-1] = 0;
+				space_used--;
+			}
+			if ( space[0] != 0 ) {
+				space[space_used-1] = 0;
+				space_used--;
+			}
 			if ( tree->next != NULL ) {
 				tree = tree->next;
 				break;
@@ -307,6 +335,7 @@ static void fun_tree(FileFS *ffs)
 	// free tree
 	tree = treehead;
 	if ( tree == NULL ) {
+		free(space);
 		free(path_root);
 		return;
 	}
@@ -337,7 +366,10 @@ static void fun_tree(FileFS *ffs)
 		if ( flag == 1 ) break;
 	}
 	
+	free(space);
 	free(path_root);
+	
+	printf("leaf:%d\n", leaf);
 }
 
 static void fun_fwrite(FileFS *ffs, char *filename, char *content, char *mode)
