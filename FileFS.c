@@ -141,7 +141,7 @@ typedef struct TMP {
 	// 4b(blockindex) + 512b(block)
 	FILE *fp_cp, *fp_add;
 	
-	unsigned char cp_size;
+	unsigned int cp_size;
 	
 	unsigned int total_blocksize, unused_blockhead; // 执行fp = ffs_tmpfile()时，同步从orgfile里的block[0]读取这2个值
 	unsigned int new_total_blocksize, new_unused_blockhead; // 一开始和上面的值相同，会随着tmpfile的处理产生变化
@@ -587,14 +587,14 @@ static FFS_FILE *do_fopen_r(FileFS *ffs, char *lastname, unsigned char mode, uns
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
+				return NULL; // file not exist
+			}
+				
 			state = block[k]; k++;
 			memcpy(s, block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
-					return NULL; // file not exist
-				}
 				continue;
 			}
 			dir_file = state & 0x01;
@@ -916,15 +916,15 @@ static FFS_FILE *do_fopen_w(FileFS *ffs, char *lastname, unsigned char mode, uns
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
+				flag = 1;
+				break;
+			}
+				
 			state = block[k]; k++;
 			memcpy(s, block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
-					flag = 1;
-					break;
-				}
 				continue;
 			}
 			dir_file = state & 0x01;
@@ -1045,15 +1045,15 @@ static FFS_FILE *do_fopen_a(FileFS *ffs, char *lastname, unsigned char mode, uns
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
+				flag = 1;
+				break;
+			}
+				
 			state = block[k]; k++;
 			memcpy(s, block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
-					flag = 1;
-					break;
-				}
 				continue;
 			}
 			dir_file = state & 0x01;
@@ -1828,11 +1828,11 @@ static unsigned char FileFS_stat(FileFS *ffs, const char *name)
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			if ( index == stop_blockindex && k+1 >= offset ) return 0; // 已搜索到最后
 			state = block[k]; k++;
 			memcpy(s, block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, lastname) != 0 ) {
 				k += 10; // 4+4+2
-				if ( index == stop_blockindex && k+1 >= offset ) return 0; // 已搜索到最后
 				continue;
 			}
 			dir_file = state & 0x01;
@@ -1970,15 +1970,14 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			// printf("index:%d, stop_blockindex:%d, k=%d, offset:%d\n", index, stop_blockindex, k, offset);
+			if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
+				return 2; // file not exist
+			}
 			state = block[k]; k++;
 			memcpy(s, block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				// printf("index:%d, stop_blockindex:%d, k=%d, offset:%d\n", index, stop_blockindex, k, offset);
-				if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
-					return 2; // file not exist
-				}
 				continue;
 			}
 			//printf("state:%d\n", state);
@@ -1996,6 +1995,7 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 			// block_item
 			u = 0;
 			for (i=0; i<ba_used; i++) {
+				if ( ! ba[i].active ) continue;
 				if ( ba[i].blockindex == index ) {
 					block_item = ba[i].block;
 					block_item_index = index;
@@ -2086,6 +2086,7 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 		removeblock(ffs, block_last_index);
 		k = -1;
 		for (i=0; i<ba_used; i++) {
+			if ( ! ba[i].active ) continue;
 			if ( ba[i].blockindex == block_last_index ) {
 				ba[i].active = 0;
 				k = i;
@@ -2100,6 +2101,7 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 		// block_prev
 		u = 0;
 		for (i=0; i<ba_used; i++) {
+			if ( ! ba[i].active ) continue;
 			if ( ba[i].blockindex == block_prev_index ) {
 				block_prev = ba[i].block;
 				u = 1;
@@ -2213,14 +2215,13 @@ static int do_rename(FileFS *ffs, char *old_lastname, unsigned int old_blockinde
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			if ( index == old_stop_blockindex && k+1 >= old_offset ) { // 已搜索到最后
+				return 4; // old lastname item not exist
+			}
 			state = old_block[k]; k++;
 			memcpy(s, old_block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, old_lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				if ( index == old_stop_blockindex && k+1 >= old_offset ) { // 已搜索到最后
-					return 4; // old lastname item not exist
-				}
 				continue;
 			}
 			//printf("state:%d\n", state);
@@ -2306,16 +2307,15 @@ static int do_rename(FileFS *ffs, char *old_lastname, unsigned int old_blockinde
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			// printf("index:%d, new_stop_blockindex:%d, k=%d, offset:%d\n", index, new_stop_blockindex, k, offset);
+			if ( index == new_stop_blockindex && k+1 >= new_offset ) { // 已搜索到最后
+				flag = 1;
+				break; // new lastname item not exist
+			}
 			k++; // 跳过state
 			memcpy(s, new_block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, new_lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				// printf("index:%d, new_stop_blockindex:%d, k=%d, offset:%d\n", index, new_stop_blockindex, k, offset);
-				if ( index == new_stop_blockindex && k+1 >= new_offset ) { // 已搜索到最后
-					flag = 1;
-					break; // new lastname item not exist
-				}
 				continue;
 			}
 			return 5; // new name already exist
@@ -2850,14 +2850,13 @@ int FileFS_copy(FileFS *ffs, const char *from_filename, const char *to_filename)
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			if ( index == from_stop_blockindex && k+1 >= from_offset ) { // 已搜索到最后
+				return 4; // from lastname item not exist
+			}
 			state = from_block[k]; k++;
 			memcpy(s, from_block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, from_lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				if ( index == from_stop_blockindex && k+1 >= from_offset ) { // 已搜索到最后
-					return 4; // from lastname item not exist
-				}
 				continue;
 			}
 			dir_file = state & 0x01; // 0-dir,1-file
@@ -2928,16 +2927,16 @@ int FileFS_copy(FileFS *ffs, const char *from_filename, const char *to_filename)
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			// printf("index:%d, to_stop_blockindex:%d, k=%d, offset:%d\n", index, to_stop_blockindex, k, offset);
+			if ( index == to_stop_blockindex && k+1 >= to_offset ) { // 已搜索到最后
+				flag = 1;
+				break; // new lastname item not exist
+			}
+			
 			k++;
 			memcpy(s, to_block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, to_lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				// printf("index:%d, to_stop_blockindex:%d, k=%d, offset:%d\n", index, to_stop_blockindex, k, offset);
-				if ( index == to_stop_blockindex && k+1 >= to_offset ) { // 已搜索到最后
-					flag = 1;
-					break; // new lastname item not exist
-				}
 				continue;
 			}
 			return 5; // to_lastname already exist
@@ -3160,23 +3159,38 @@ unsigned char FileFS_chdir(FileFS *ffs, const char *pathname)
 	if ( pathname[0] == '/' ) {
 		blockindex = 1; // root
 		start = 1;
-		if ( ! InitPwdtmp(ffs, "/") ) return 0;
+		if ( ! InitPwdtmp(ffs, "/") ) {
+			//printf("1\n");
+			return 0;
+		}
 	} else if ( pathname[0] == '~' ) { // home
 		if ( ffs->tmp.state == 0 ) {
 			blockindex = ffs->home_pwd_blockindex; // pwd
-			if ( ! InitPwdtmp(ffs, ffs->home_pwd) ) return 0;
+			if ( ! InitPwdtmp(ffs, ffs->home_pwd) ) {
+				//printf("2\n");
+				return 0;
+			}
 		} else {
 			blockindex = ffs->tmp.home_pwd_blockindex;
-			if ( ! InitPwdtmp(ffs, ffs->tmp.home_pwd) ) return 0;
+			if ( ! InitPwdtmp(ffs, ffs->tmp.home_pwd) ) {
+				//printf("3\n");
+				return 0;
+			}
 		}
 		start = 1;
 	} else {
 		if ( ffs->tmp.state == 0 ) {
 			blockindex = ffs->pwd_blockindex; // pwd
-			if ( ! InitPwdtmp(ffs, ffs->pwd) ) return 0;
+			if ( ! InitPwdtmp(ffs, ffs->pwd) ) {
+				//printf("4\n");
+				return 0;
+			}
 		} else {
 			blockindex = ffs->tmp.pwd_blockindex; // pwd
-			if ( ! InitPwdtmp(ffs, ffs->tmp.pwd) ) return 0;
+			if ( ! InitPwdtmp(ffs, ffs->tmp.pwd) ) {
+				//printf("5\n");
+				return 0;
+			}
 		}
 		start = 0;
 	}
@@ -3190,31 +3204,49 @@ unsigned char FileFS_chdir(FileFS *ffs, const char *pathname)
 			if ( slen == 0 ) continue;
 			s[slen] = 0;
 			index = findPathBlockindex(ffs, blockindex, s);
-			if ( index < 1 ) return 0;
+			if ( index < 1 ) {
+				//printf("5\n");
+				return 0;
+			}
 			blockindex = index;
 			slen = 0;
 			
-			if ( ! AddToPwdtmp(ffs, len, s) ) return 0;
+			if ( ! AddToPwdtmp(ffs, len, s) ) {
+				//printf("6\n");
+				return 0;
+			}
 			continue;
 		}
 		s[slen] = pathname[i];
 		slen++;
-		if ( slen > BLOCK_NAME_MAXSIZE ) return 0;
+		if ( slen > BLOCK_NAME_MAXSIZE ) {
+			//printf("7\n");
+			return 0;
+		}
 	}
 	if ( slen > 0 ) {
 		s[slen] = 0;
 		index = findPathBlockindex(ffs, blockindex, s);
-		if ( index < 1 ) return 0;
+		if ( index < 1 ) {
+			//printf("8\n");
+			return 0;
+		}
 		blockindex = index;
 		
-		if ( ! AddToPwdtmp(ffs, len, s) ) return 0;
+		if ( ! AddToPwdtmp(ffs, len, s) ) {
+			//printf("9\n");
+			return 0;
+		}
 	}
 	
 	if ( ffs->tmp.state == 0 ) {
 		len = (int)strlen(ffs->pwd_tmp) + 1;
 		if ( len > ffs->pwd_size ) {
 			p = realloc(ffs->pwd, len);
-			if ( p == NULL ) return 0;
+			if ( p == NULL ) {
+				//printf("10\n");
+				return 0;
+			}
 			ffs->pwd = (char*)p;
 			ffs->pwd_size = len;
 		}
@@ -3225,7 +3257,10 @@ unsigned char FileFS_chdir(FileFS *ffs, const char *pathname)
 		len = (int)strlen(ffs->pwd_tmp) + 1;
 		if ( len > ffs->tmp.pwd_size ) {
 			p = realloc(ffs->tmp.pwd, len);
-			if ( p == NULL ) return 0;
+			if ( p == NULL ) {
+				//printf("11\n");
+				return 0;
+			}
 			ffs->tmp.pwd = (char*)p;
 			ffs->tmp.pwd_size = len;
 		}
@@ -3687,16 +3722,16 @@ int FileFS_mkdir(FileFS *ffs, const char *pathname)
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			// printf("index:%d, stop_blockindex:%d, k=%d, offset:%d\n", index, stop_blockindex, k, offset);
+			if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
+				flag = 1;
+				break;
+			}
+			
 			state = block[k]; k++;
 			memcpy(s, block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				// printf("index:%d, stop_blockindex:%d, k=%d, offset:%d\n", index, stop_blockindex, k, offset);
-				if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
-					flag = 1;
-					break;
-				}
 				continue;
 			}
 			dir_file = state & 0x01;
@@ -3825,20 +3860,20 @@ int FileFS_rmdir(FileFS *ffs, const char *pathname)
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			// printf("index:%d, stop_blockindex:%d, k=%d, offset:%d\n", index, stop_blockindex, k, offset);
+			if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
+				return 3; // dir item not exist
+			}
+			
 			state = block[k]; k++;
 			memcpy(s, block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, lastname) != 0 ) {
 				k += 10; // 4+4+2
-				
-				// printf("index:%d, stop_blockindex:%d, k=%d, offset:%d\n", index, stop_blockindex, k, offset);
-				if ( index == stop_blockindex && k+1 >= offset ) { // 已搜索到最后
-					return 3; // dir item not exist
-				}
 				continue;
 			}
 			//printf("state:%d\n", state);
 			dir_file = state & 0x01;
-			if ( dir_file == 1 ) {
+			if ( dir_file == 1 ) { // file
 				return 3; // same filename exist;
 			}
 			
@@ -3857,6 +3892,7 @@ int FileFS_rmdir(FileFS *ffs, const char *pathname)
 			// block_item
 			u = 0;
 			for (i=0; i<ba_used; i++) {
+				if ( ! ba[i].active ) continue;
 				if ( ba[i].blockindex == index ) {
 					block_item = ba[i].block;
 					block_item_index = index;
@@ -3889,7 +3925,7 @@ int FileFS_rmdir(FileFS *ffs, const char *pathname)
 	// =======================
 	// 正式开始删除目录项
 	if ( ffs->tmp.state == 0 ) tmpstart(ffs, 1);
-
+	
 	// removeblock 子目录
 	removeblock(ffs, subdirblockindex);
 	
@@ -3931,6 +3967,7 @@ int FileFS_rmdir(FileFS *ffs, const char *pathname)
 		removeblock(ffs, block_last_index);
 		k = -1;
 		for (i=0; i<ba_used; i++) {
+			if ( ! ba[i].active ) continue;
 			if ( ba[i].blockindex == block_last_index ) {
 				ba[i].active = 0;
 				k = i;
@@ -3945,6 +3982,7 @@ int FileFS_rmdir(FileFS *ffs, const char *pathname)
 		// block_prev
 		u = 0;
 		for (i=0; i<ba_used; i++) {
+			if ( ! ba[i].active ) continue;
 			if ( ba[i].blockindex == block_prev_index ) {
 				block_prev = ba[i].block;
 				u = 1;
@@ -4607,6 +4645,7 @@ static unsigned char writeblock(FileFS *ffs, unsigned int blockindex, unsigned c
 	// 从fp中读取cpindex，再从指定的cpindex里读取blockindex
 	// 比较2个blockindex是否相同，避免fp中写入的cpindex是错误的
 	if ( orgindex != blockindex ) {
+		// printf("=========== orgindex:%d, bloclindex:%d, tmp.cp_size:%d\n", orgindex, blockindex, ffs->tmp.cp_size);
 		cpindex = ffs->tmp.cp_size;
 		
 		pos = cpindex;
@@ -4774,18 +4813,17 @@ static unsigned int findPathBlockindex(FileFS *ffs, unsigned int blockindex, cha
 		// blocksize=512,去掉前置的12byte，一共能放下20个子项目(目录或文件)
 		k = BLOCK_HEAD;
 		for (i=0; i<BLOCK_ITEM_MAXCOUNT; i++) {
+			if ( index == stop_blockindex && k+1 >= offset ) return 0; // 已搜索到最后
 			state = block[k]; k++;
 			dir_file = state & 0x01;
 			if ( dir_file == 1 ) { // is file
 				k += 24;
-				if ( index == stop_blockindex && k+1 >= offset ) return 0; // 已搜索到最后
 				continue;
 			}
 			// path
 			memcpy(s, block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, pathname) != 0 ) {
 				k += 10; // 4+4+2
-				if ( index == stop_blockindex && k+1 >= offset ) return 0; // 已搜索到最后
 				continue;
 			}
 			memcpy(b4, block+k, 4);
