@@ -92,11 +92,10 @@ static unsigned char ffs_rmdir(FileFS *ffs, char *path)
 	int len = (int)strlen(path);
 	if (len < 1) return 0;
 
-	char *srcpath = NULL, *runpath = NULL, c;
+	char *srcpath = NULL, *runpath = NULL;
 	int runlen = 0;
 	FFS_dirent *dir;
 	FFS_DIR *dirp;
-	int i;
 	char *filename = NULL;
 
 	if ( ! FileFS_chdir(ffs, path) ) return 0;

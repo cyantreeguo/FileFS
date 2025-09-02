@@ -88,6 +88,12 @@ unsigned char FileFS_chdir(FileFS *ffs, const char *pathname);
 char *FileFS_getcwd(FileFS *ffs);
 unsigned char FileFS_sethome(FileFS *ffs, const char *pathname); // ~
 char *FileFS_gethome(FileFS *ffs);
+
+// 将当前目录存储为工作目录，此接口只是为了保留当前目录
+unsigned char FileFS_setwork(FileFS *ffs);
+// 将当前目录转回工作目录
+unsigned char FileFS_chwork(FileFS *ffs);
+
 // return: 0-ok,1-gen err,2-name>limit(14byte),3-path existed,4-exist same name file
 int FileFS_mkdir(FileFS *ffs, const char *pathname);
 // return: 0-ok,1-gen err,2-sub dir not empty,3-path not existed,4-name>limit(14byte)

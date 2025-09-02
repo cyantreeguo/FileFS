@@ -78,16 +78,22 @@ static void ffs_fflush(FILE *fp)
 
 // block尺寸
 #define BLOCKSIZE 512
+
 // 一个block中最多能容纳的文件/目录项数量
 #define BLOCK_ITEM_MAXCOUNT 20
+
 // block的开头长度：tmpindex + nextblockindex + prevblockindex
 #define BLOCK_HEAD 12
+
 // 文件/目录名最大长度
 #define BLOCK_NAME_MAXSIZE 14
+
 // .->start_blockindex在block中的位置, head 12 + state 1 + name 14
 #define BLOCK_START_BLOCKINDEX 27
+
 // .->stop_blockindex在block中的位置, head 12 + state 1 + name 14 + start 4
 #define BLOCK_STOP_BLOCKINDEX 31
+
 // .->listsize在block中的位置, head 12 + state 1 + name 14 + start 4 + stop + 4
 #define BLOCK_OFFSET 35
 
@@ -139,6 +145,10 @@ typedef struct TMP {
 	int home_pwd_size;
 	unsigned int home_pwd_blockindex;
 	
+	char *work;
+	int work_size;
+	unsigned int work_blockindex;
+	
 	// 4b(blockindex) + 512b(block)
 	FILE *fp_cp, *fp_add;
 	
@@ -167,6 +177,10 @@ typedef struct FileFS {
 	char *home_pwd;
 	int home_pwd_size;
 	unsigned int home_pwd_blockindex;
+	
+	char *work;
+	int work_size;
+	unsigned int work_blockindex;
 } FileFS;
 
 // ==========================================
@@ -244,7 +258,7 @@ unsigned char FileFS_mkfs(const char *filename)
 {
 	FILE *fp;
 	
-	fp = fopen(filename, "wb");
+	fp = ffs_fopen(filename, "wb");
 	if ( fp == NULL ) return 0;
 	
 	unsigned char block[BLOCKSIZE];
@@ -340,7 +354,7 @@ unsigned char FileFS_mount(FileFS *ffs, const char *filename)
 	
 	FILE *fp, *fpj;
 	
-	fp = fopen(filename, "r+b");
+	fp = ffs_fopen(filename, "r+b");
 	if ( fp == NULL ) return 0;
 	
 	unsigned char block[BLOCKSIZE];
@@ -459,7 +473,7 @@ unsigned char FileFS_mount(FileFS *ffs, const char *filename)
 	}
 	sprintf(ffs->fnj, "%s-j", ffs->fn);
 
-	fpj = fopen(ffs->fnj, "w+b");
+	fpj = ffs_fopen(ffs->fnj, "w+b");
 	if ( fpj == NULL ) {
 		ffs_fclose(fp);
 		ffs->fp = NULL;
@@ -487,6 +501,11 @@ unsigned char FileFS_mount(FileFS *ffs, const char *filename)
 	sprintf(ffs->home_pwd, "/");
 	ffs->home_pwd_size = 2;
 	ffs->home_pwd_blockindex = 1;
+	
+	if ( ffs->work != NULL ) free(ffs->work);
+	ffs->work = NULL;
+	ffs->work_size = 0;
+	ffs->work_blockindex = 1;
 	
 	// move data of fn-j to fn;
 	j2ffs(ffs);
@@ -516,6 +535,34 @@ void FileFS_umount(FileFS *ffs)
 		ffs->fnj = NULL;
 	}
 	
+	if ( ffs->pwd != NULL ) {
+		free(ffs->pwd);
+		ffs->pwd = NULL;
+	}
+	ffs->pwd_size = 0;
+	ffs->pwd_blockindex = 0;
+	
+	if ( ffs->pwd_tmp != NULL ) {
+		free(ffs->pwd_tmp);
+		ffs->pwd_tmp = NULL;
+	}
+	ffs->pwd_tmp_size = 0;
+	
+	if ( ffs->home_pwd != NULL ) {
+		free(ffs->home_pwd);
+		ffs->home_pwd = NULL;
+	}
+	ffs->home_pwd_size = 0;
+	ffs->home_pwd_blockindex = 0;
+	
+	if ( ffs->work != NULL ) {
+		free(ffs->work);
+		ffs->work = NULL;
+	}
+	ffs->work_size = 0;
+	ffs->work_blockindex = 0;
+	
+	// tmp
 	if ( ffs->tmp.fp_cp != NULL ) {
 		ffs_fclose(ffs->tmp.fp_cp);
 		ffs->tmp.fp_cp = NULL;
@@ -536,24 +583,11 @@ void FileFS_umount(FileFS *ffs)
 		ffs->tmp.home_pwd = NULL;
 	}
 	ffs->tmp.home_pwd_size = 0;
-	
-	if ( ffs->pwd != NULL ) {
-		free(ffs->pwd);
-		ffs->pwd = NULL;
+	if ( ffs->tmp.work != NULL ) {
+		free(ffs->tmp.work);
+		ffs->tmp.work = NULL;
 	}
-	ffs->pwd_size = 0;
-	ffs->pwd_blockindex = 0;
-	if ( ffs->home_pwd != NULL ) {
-		free(ffs->home_pwd);
-		ffs->home_pwd = NULL;
-	}
-	ffs->home_pwd_size = 0;
-	ffs->home_pwd_blockindex = 0;
-	if ( ffs->pwd_tmp != NULL ) {
-		free(ffs->pwd_tmp);
-		ffs->pwd_tmp = NULL;
-	}
-	ffs->pwd_tmp_size = 0;
+	ffs->tmp.work_size = 0;
 }
 
 unsigned char FileFS_ismount(FileFS *ffs)
@@ -3403,6 +3437,83 @@ char *FileFS_gethome(FileFS *ffs)
 	}
 }
 
+// 将当前目录存储为工作目录，此接口只是为了保留当前目录
+unsigned char FileFS_setwork(FileFS *ffs)
+{
+	if ( ffs == NULL ) return 0;
+	if ( ffs->fp == NULL ) return 0;
+	
+	int len;
+	void *p;
+	if ( ffs->tmp.state == 0 ) {
+		len = (int)strlen(ffs->pwd) + 1;
+		if ( len > ffs->work_size ) {
+			p = realloc(ffs->work, len);
+			if ( p == NULL ) return 0;
+			ffs->work = (char*)p;
+			ffs->work_size = len;
+		}
+		strcpy(ffs->work, ffs->pwd);
+		
+		ffs->work_blockindex = ffs->pwd_blockindex;
+	} else {
+		len = (int)strlen(ffs->tmp.pwd) + 1;
+		if ( len > ffs->tmp.work_size ) {
+			p = realloc(ffs->tmp.work, len);
+			if ( p == NULL ) return 0;
+			ffs->tmp.work = (char*)p;
+			ffs->tmp.work_size = len;
+		}
+		strcpy(ffs->tmp.work, ffs->tmp.pwd);
+		
+		ffs->tmp.work_blockindex = ffs->tmp.pwd_blockindex;
+	}
+	
+	return 1;
+}
+// 将当前目录转回工作目录
+unsigned char FileFS_chwork(FileFS *ffs)
+{
+	if ( ffs == NULL ) return 0;
+	if ( ffs->fp == NULL ) return 0;
+	
+	int len;
+	void *p;
+	if ( ffs->tmp.state == 0 ) {
+		if ( ffs->work == NULL ) return 0;
+		len = (int)strlen(ffs->work) + 1;
+		if ( len > ffs->pwd_size ) {
+			p = realloc(ffs->pwd, len);
+			if ( p == NULL ) {
+				//printf("10\n");
+				return 0;
+			}
+			ffs->pwd = (char*)p;
+			ffs->pwd_size = len;
+		}
+		strcpy(ffs->pwd, ffs->work);
+		
+		ffs->pwd_blockindex = ffs->work_blockindex;
+	} else {
+		if ( ffs->tmp.work == NULL ) return 0;
+		len = (int)strlen(ffs->tmp.work) + 1;
+		if ( len > ffs->tmp.pwd_size ) {
+			p = realloc(ffs->tmp.pwd, len);
+			if ( p == NULL ) {
+				//printf("11\n");
+				return 0;
+			}
+			ffs->tmp.pwd = (char*)p;
+			ffs->tmp.pwd_size = len;
+		}
+		strcpy(ffs->tmp.pwd, ffs->tmp.work);
+		
+		ffs->tmp.pwd_blockindex = ffs->tmp.work_blockindex;
+	}
+	
+	return 1;
+}
+
 // ======================
 static int do_mkdir(FileFS *ffs, char *lastname, unsigned int start_blockindex, unsigned char *start_block, 
 	unsigned int cur_blockindex, unsigned char *cur_block, 
@@ -4239,9 +4350,9 @@ static unsigned int findPathBlockindex(FileFS *ffs, unsigned int blockindex, cha
 	unsigned short offset;
 	
 	if ( ! readblock(ffs, index, block) ) return 0;
-	memcpy(b4, block+(12+1+14+4), 4);
+	memcpy(b4, block+(BLOCK_STOP_BLOCKINDEX), 4);
 	stop_blockindex = B4toU32(b4);
-	memcpy(b2, block+(12+1+14+4+4), 2);
+	memcpy(b2, block+(BLOCK_OFFSET), 2);
 	offset = B2toU16(b2);
 	
 	while (1) {
@@ -4347,14 +4458,10 @@ unsigned char FileFS_commit(FileFS *ffs)
 			return 0;
 		}
 		
-		/*
-		if ( ffs->tmp.block_0_change ) {
-			fwrite(block0, fnj);
-		}
-		*/
+		// block 0
 		if ( ffs->tmp.total_blocksize != ffs->tmp.new_total_blocksize ||
 			ffs->tmp.unused_blockhead != ffs->tmp.new_unused_blockhead ) {
-			// block index
+			// block index = 0
 			memset(b4, 0, 4);
 			fwrite(b4, 1, 4, fp);
 			
@@ -4374,16 +4481,13 @@ unsigned char FileFS_commit(FileFS *ffs)
 		}
 		blocksize++;
 		
-		/*
-		rewind(ffs->tmp.fp_cp);
-		while (1) {
-			read ffs->tmp.fp_cp;
-			write fnj;
-		}
-		*/
+		// copy fp_cp to fnj
 		ffs_rewind(ffs->tmp.fp_cp);
 		n = 0;
 		while (1) {
+			if ( n >= ffs->tmp.cp_size ) break;
+			n++;
+			
 			if ( BLOCKSIZE+4 != ffs_fread(block, 1, BLOCKSIZE+4, ffs->tmp.fp_cp) ) break;
 			if ( BLOCKSIZE + 4 != ffs_fwrite(block, 1, BLOCKSIZE+4, fp) ) {
 				ffs_fclose(fp);
@@ -4391,21 +4495,15 @@ unsigned char FileFS_commit(FileFS *ffs)
 				return 0;
 			}
 			blocksize++;
-
-			n++;
-			if ( n >= ffs->tmp.cp_size ) break;
 		}
 		
-		/*
-		rewind(ffs->tmp.fp_add);
-		while (1) {
-			read ffs->tmp.fp_add;
-			write fnj;
-		}
-		*/
+		// copy fp_add to fnj
 		ffs_rewind(ffs->tmp.fp_add);
 		n = 0;
 		while (1) {
+			if ( n >= ffs->tmp.add_size ) break;
+			n++;
+			
 			if ( BLOCKSIZE+4 != ffs_fread(block, 1, BLOCKSIZE+4, ffs->tmp.fp_add) ) break;
 			if ( BLOCKSIZE + 4 != ffs_fwrite(block, 1, BLOCKSIZE+4, fp) ) {
 				ffs_fclose(fp);
@@ -4413,9 +4511,6 @@ unsigned char FileFS_commit(FileFS *ffs)
 				return 0;
 			}
 			blocksize++;
-
-			n++;
-			if ( n >= ffs->tmp.add_size ) break;
 		}
 		
 		ffs_rewind(fp);
@@ -4450,6 +4545,9 @@ unsigned char FileFS_commit(FileFS *ffs)
 		}
 		n = 0;
 		while (1) {
+			if ( n >= blocksize ) break;
+			n++;
+			
 			// read fnj;
 			if ( BLOCKSIZE+4 != ffs_fread(block, 1, BLOCKSIZE+4, fp) ) break;
 			// gen blockindex;
@@ -4463,8 +4561,6 @@ unsigned char FileFS_commit(FileFS *ffs)
 				tmpstop(ffs);
 				return 0;
 			}
-			n++;
-			if ( n >= blocksize ) break;
 		}
 		// ffs_fclose(fp);
 
@@ -4620,7 +4716,7 @@ static unsigned int genblockindex(FileFS *ffs)
 		return blockindex;
 	}
 	
-	// unused_block为空，则在fp_add里新增一个block，并将new_total_blocksize+1
+	// unused_block找不到空闲块，则在fp_add里新增一个block，并将new_total_blocksize+1
 	blockindex = ffs->tmp.new_total_blocksize;
 	unsigned int addindex;
 	unsigned long long pos;
@@ -4648,7 +4744,7 @@ static unsigned char readblock(FileFS *ffs, unsigned int blockindex, unsigned ch
 	unsigned long long pos;
 	unsigned int addindex;
 	unsigned char buf[4], b4[4];
-	unsigned int cpindex;
+	unsigned int cpindex, orgindex;;
 		
 	pos = blockindex;
 	pos *= BLOCKSIZE;
@@ -4673,33 +4769,28 @@ static unsigned char readblock(FileFS *ffs, unsigned int blockindex, unsigned ch
 		return 1;
 	}
 	
-	unsigned char flag = 0;
 	// 此时tmp必然存在，且只能在fp_cp中，fp_add已经在前面处理过了，read by fp_cp
 	memcpy(b4, buf, 4);
-	cpindex = B4toU32(b4);	
-	pos = cpindex;
-	if ( cpindex >= ffs->tmp.cp_size ) {
-		flag = 1;
-	} else {
+	cpindex = B4toU32(b4);
+	if ( cpindex < ffs->tmp.cp_size ) {
+		pos = cpindex;
 		pos *= (BLOCKSIZE+4);
 		ffs_fsetpos(ffs->tmp.fp_cp, pos);
-		if ( 4 != ffs_fread(b4, 1, 4, ffs->tmp.fp_cp) ) flag = 1; // 当前block尚未复制到fp_cp
+		if ( 4 == ffs_fread(b4, 1, 4, ffs->tmp.fp_cp) ) {
+			orgindex = B4toU32(b4);
+			// 从fp中读取cpindex，再从指定的cpindex里读取blockindex
+			// 比较2个blockindex是否相同，避免fp中写入的cpindex是错误的
+			if ( orgindex == blockindex ) {
+				// 此时确认fp_cp中存在被复制的block，可以读取fp_cp
+				if ( BLOCKSIZE != ffs_fread(block, 1, BLOCKSIZE, ffs->tmp.fp_cp) ) return 0;
+				return 1;
+			}
+		}
 	}
-	if ( 1 == flag ) {
-		memcpy(block, buf, 4);
-		if ( BLOCKSIZE-4 != ffs_fread(block+4, 1, BLOCKSIZE-4, ffs->fp) ) return 0;
-		return 1;
-	}
-	unsigned int orgindex;
-	orgindex = B4toU32(b4);
-	// 从fp中读取cpindex，再从指定的cpindex里读取blockindex
-	// 比较2个blockindex是否相同，避免fp中写入的cpindex是错误的
-	if ( orgindex != blockindex ) {
-		memcpy(block, buf, 4);
-		if ( BLOCKSIZE-4 != ffs_fread(block+4, 1, BLOCKSIZE-4, ffs->fp) ) return 0;
-		return 1;
-	}
-	if ( BLOCKSIZE != ffs_fread(block, 1, BLOCKSIZE, ffs->tmp.fp_cp) ) return 0;
+
+	// fp_cp中没有fp的复本，读fp
+	memcpy(block, buf, 4);
+	if ( BLOCKSIZE-4 != ffs_fread(block+4, 1, BLOCKSIZE-4, ffs->fp) ) return 0;
 	return 1;
 }
 
@@ -4741,100 +4832,62 @@ static unsigned char writeblock(FileFS *ffs, unsigned int blockindex, unsigned c
 			//printf("3\n");
 			return 0;
 		}
-		if (addindex >= ffs->tmp.add_size) {
-			ffs->tmp.add_size++;
-		}
 		// 因为是增加的block，所以在ffs->fp中没有对应的block，无需处理cpindex
 		return 1;
 	}
 	
-	unsigned char flag = 0;
-	// 此时tmp必然存在，且只能在fp_cp中，fp_add已经在前面处理过了，read by fp_cp
+	// 此时tmp必然存在，且只能在fp_cp中，read by fp_cp, fp_add已经在前面处理过了
 	memcpy(b4, buf, 4);
 	cpindex = B4toU32(b4);
-	if ( cpindex >= ffs->tmp.cp_size ) {
-		flag = 1;
-	} else {
+	if ( cpindex < ffs->tmp.cp_size ) {
 		pos = cpindex;
 		pos *= (BLOCKSIZE+4);
 		ffs_fsetpos(ffs->tmp.fp_cp, pos);
-		if ( 4 != ffs_fread(b4, 1, 4, ffs->tmp.fp_cp) ) flag = 1;// 当前block尚未复制到fp_cp
-	}
-	if ( 1 == flag ) {
-		cpindex = ffs->tmp.cp_size;
-		
-		pos = cpindex;
-		pos *= (BLOCKSIZE+4);
-		ffs_fsetpos(ffs->tmp.fp_cp, pos);
-		U32toB4(blockindex, b4);
-		if ( 4 != ffs_fwrite(b4, 1, 4, ffs->tmp.fp_cp) ) {
-			//printf("4\n");
-			return 0;
+		if ( 4 == ffs_fread(b4, 1, 4, ffs->tmp.fp_cp) ) {
+			orgindex = B4toU32(b4);
+			// 从fp中读取cpindex，再从指定的cpindex里读取blockindex
+			// 比较2个blockindex是否相同，避免fp中写入的cpindex是错误的
+			if ( orgindex == blockindex ) {
+				// 在fread和fwrite间切换时:
+				// When the “r+”, “w+”, or “a+” access type is specified, both reading and writing are allowed (the file is said to be open for “update”). 
+				// However, when you switch between reading and writing, there must be an intervening fflush, fsetpos, fseek, or rewind operation. 
+				pos = cpindex;
+				pos *= (BLOCKSIZE+4);
+				pos += 4;
+				ffs_fsetpos(ffs->tmp.fp_cp, pos);
+				// printf("write pos:%d, cpindex:%d\n", pos, cpindex);
+				if ( BLOCKSIZE != (int)fwrite(block, 1, BLOCKSIZE, ffs->tmp.fp_cp) ) {
+					return 0;
+				}
+				return 1;
+			}
 		}
-		if ( BLOCKSIZE != ffs_fwrite(block, 1, BLOCKSIZE, ffs->tmp.fp_cp) ) {
-			//printf("5\n");
-			return 0;
-		}
-		
-		pos = blockindex;
-		pos *= BLOCKSIZE;
-		ffs_fsetpos(ffs->fp, pos);
-		U32toB4(cpindex, b4);
-		if ( 4 != ffs_fwrite(b4, 1, 4, ffs->fp) ) {
-			//printf("6\n");
-			return 0; // 只更新fp中的cpindex
-		}
-	
-		ffs->tmp.cp_size++;
-		return 1;
-	}
-	orgindex = B4toU32(b4);
-	// 从fp中读取cpindex，再从指定的cpindex里读取blockindex
-	// 比较2个blockindex是否相同，避免fp中写入的cpindex是错误的
-	if ( orgindex != blockindex ) {
-		// printf("=========== orgindex:%d, bloclindex:%d, tmp.cp_size:%d\n", orgindex, blockindex, ffs->tmp.cp_size);
-		cpindex = ffs->tmp.cp_size;
-		
-		pos = cpindex;
-		pos *= (BLOCKSIZE+4);
-		ffs_fsetpos(ffs->tmp.fp_cp, pos);
-		U32toB4(blockindex, b4);
-		if ( 4 != ffs_fwrite(b4, 1, 4, ffs->tmp.fp_cp) ) {
-			//printf("7\n");
-			return 0;
-		}
-		if ( BLOCKSIZE != ffs_fwrite(block, 1, BLOCKSIZE, ffs->tmp.fp_cp) ) {
-			//printf("8\n");
-			return 0;
-		}
-		
-		pos = blockindex;
-		pos *= BLOCKSIZE;
-		ffs_fsetpos(ffs->fp, pos);
-		U32toB4(cpindex, b4);
-		if ( 4 != ffs_fwrite(b4, 1, 4, ffs->fp) ) {
-			//printf("9\n");
-			return 0; // 只更新fp中的cpindex
-		}
-	
-		ffs->tmp.cp_size++;
-		return 1;
 	}
 	
-	// 在fread和fwrite间切换时:
-	// When the “r+”, “w+”, or “a+” access type is specified, both reading and writing are allowed (the file is said to be open for “update”). 
-	// However, when you switch between reading and writing, there must be an intervening fflush, fsetpos, fseek, or rewind operation. 
+	cpindex = ffs->tmp.cp_size;
 	pos = cpindex;
 	pos *= (BLOCKSIZE+4);
-	pos += 4;
 	ffs_fsetpos(ffs->tmp.fp_cp, pos);
-	// printf("write pos:%d, cpindex:%d\n", pos, cpindex);
-	int r = (int)fwrite(block, 1, BLOCKSIZE, ffs->tmp.fp_cp);
-	if ( BLOCKSIZE != r ) {
-		//printf("Error write fp_cp: %s\n", strerror(errno));
-		//printf("10, r:%d\n", r);
+	U32toB4(blockindex, b4);
+	if ( 4 != ffs_fwrite(b4, 1, 4, ffs->tmp.fp_cp) ) {
+		//printf("4\n");
 		return 0;
 	}
+	if ( BLOCKSIZE != ffs_fwrite(block, 1, BLOCKSIZE, ffs->tmp.fp_cp) ) {
+		//printf("5\n");
+		return 0;
+	}
+	
+	pos = blockindex;
+	pos *= BLOCKSIZE;
+	ffs_fsetpos(ffs->fp, pos);
+	U32toB4(cpindex, b4);
+	if ( 4 != ffs_fwrite(b4, 1, 4, ffs->fp) ) {
+		//printf("6\n");
+		return 0; // 只更新fp中的cpindex
+	}
+	
+	ffs->tmp.cp_size++;
 	return 1;
 }
 
@@ -4847,6 +4900,7 @@ static unsigned char removeblock(FileFS *ffs, unsigned int blockindex)
 	unsigned int addindex;
 	unsigned char buf[4], b4[4];
 	unsigned int cpindex;
+	unsigned int orgindex;
 	unsigned char block[BLOCKSIZE];
 	
 	pos = blockindex;
@@ -4866,80 +4920,52 @@ static unsigned char removeblock(FileFS *ffs, unsigned int blockindex)
 		return 1;
 	}
 	
-	unsigned char flag = 0;
 	// 此时tmp必然存在，且只能在fp_cp中，fp_add已经在前面处理过了，read by fp_cp
 	memcpy(b4, buf, 4);
 	cpindex = B4toU32(b4);
-	if ( cpindex >= ffs->tmp.cp_size ) {
-		flag = 1;
-	} else {
+	if ( cpindex < ffs->tmp.cp_size ) {
 		pos = cpindex;
 		pos *= (BLOCKSIZE+4);
 		ffs_fsetpos(ffs->tmp.fp_cp, pos);
-		if ( 4 != ffs_fread(b4, 1, 4, ffs->tmp.fp_cp) ) flag = 1; // 当前block尚未复制到fp_cp
+		if ( 4 == ffs_fread(b4, 1, 4, ffs->tmp.fp_cp) ) {
+			orgindex = B4toU32(b4);
+			// 从fp中读取cpindex，再从指定的cpindex里读取blockindex
+			// 比较2个blockindex是否相同，避免fp中写入的cpindex是错误的
+			if ( orgindex == blockindex ) {
+				pos += 8; // 跳过blockindex和cpindex
+				ffs_fsetpos(ffs->tmp.fp_cp, pos);
+				U32toB4(ffs->tmp.new_unused_blockhead, b4); // 写入blockindex(new_unused_blockhead)到fp_cp
+				if ( 4 != ffs_fwrite(b4, 1, 4, ffs->tmp.fp_cp) ) return 0;
+				ffs->tmp.new_unused_blockhead = blockindex; // 将blockindex存入new_unused_blockhead
+				// printf("5.set new_unused_blockhead:%d\n", ffs->tmp.new_unused_blockhead);
+				return 1;
+			}
+		}
 	}
-	if ( 1 == flag ) {
-		cpindex = ffs->tmp.cp_size;
-		
-		pos = cpindex;
-		pos *= (BLOCKSIZE+4);
-		ffs_fsetpos(ffs->tmp.fp_cp, pos);
-		U32toB4(blockindex, b4);
-		if ( 4 != ffs_fwrite(b4, 1, 4, ffs->tmp.fp_cp) ) return 0;
-		U32toB4(ffs->tmp.new_unused_blockhead, b4);
-		memcpy(block, b4, 4); // 写入new_unused_blockhead
-		pos += 8; // 跳过blockindex和cpindex
-		ffs_fsetpos(ffs->tmp.fp_cp, pos);
-		if ( BLOCKSIZE != ffs_fwrite(block, 1, BLOCKSIZE, ffs->tmp.fp_cp) ) return 0;
-		
-		pos = blockindex;
-		pos *= BLOCKSIZE;
-		ffs_fsetpos(ffs->fp, pos);
-		U32toB4(cpindex, b4);
-		if ( 4 != ffs_fwrite(b4, 1, 4, ffs->fp) ) return 0; // 只更新fp中的cpindex
+
+	cpindex = ffs->tmp.cp_size;
 	
-		ffs->tmp.cp_size++;
-		
-		ffs->tmp.new_unused_blockhead = blockindex; // 将blockindex存入new_unused_blockhead
-		// printf("3.set new_unused_blockhead:%d\n", ffs->tmp.new_unused_blockhead);
-		return 1;
-	}
-	unsigned int orgindex;
-	orgindex = B4toU32(b4);
-	// 从fp中读取cpindex，再从指定的cpindex里读取blockindex
-	// 比较2个blockindex是否相同，避免fp中写入的cpindex是错误的
-	if ( orgindex != blockindex ) {
-		cpindex = ffs->tmp.cp_size;
-		
-		pos = cpindex;
-		pos *= (BLOCKSIZE+4);
-		ffs_fsetpos(ffs->tmp.fp_cp, pos);
-		U32toB4(blockindex, b4);
-		if ( 4 != ffs_fwrite(b4, 1, 4, ffs->tmp.fp_cp) ) return 0;
-		U32toB4(ffs->tmp.new_unused_blockhead, b4);
-		memcpy(block, b4, 4); // 写入new_unused_blockhead
-		pos += 8; // 跳过blockindex和cpindex
-		ffs_fsetpos(ffs->tmp.fp_cp, pos);
-		if ( BLOCKSIZE != ffs_fwrite(block, 1, BLOCKSIZE, ffs->tmp.fp_cp) ) return 0;
-		
-		pos = blockindex;
-		pos *= BLOCKSIZE;
-		ffs_fsetpos(ffs->fp, pos);
-		U32toB4(cpindex, b4);
-		if ( 4 != ffs_fwrite(b4, 1, 4, ffs->fp) ) return 0; // 只更新fp中的cpindex
-	
-		ffs->tmp.cp_size++;
-		
-		ffs->tmp.new_unused_blockhead = blockindex; // 将blockindex存入new_unused_blockhead
-		// printf("4.set new_unused_blockhead:%d\n", ffs->tmp.new_unused_blockhead);
-		return 1;
-	}
-	pos += 8; // 跳过blockindex和cpindex
+	pos = cpindex;
+	pos *= (BLOCKSIZE+4);
 	ffs_fsetpos(ffs->tmp.fp_cp, pos);
-	U32toB4(ffs->tmp.new_unused_blockhead, b4); // 写入blockindex(new_unused_blockhead)到fp_cp
+	U32toB4(blockindex, b4);
 	if ( 4 != ffs_fwrite(b4, 1, 4, ffs->tmp.fp_cp) ) return 0;
+	U32toB4(ffs->tmp.new_unused_blockhead, b4);
+	memcpy(block+4, b4, 4); // 写入new_unused_blockhead
+	pos += 4; // 跳过最前面的blockindex
+	ffs_fsetpos(ffs->tmp.fp_cp, pos);
+	if ( BLOCKSIZE != ffs_fwrite(block, 1, BLOCKSIZE, ffs->tmp.fp_cp) ) return 0;
+	
+	pos = blockindex;
+	pos *= BLOCKSIZE;
+	ffs_fsetpos(ffs->fp, pos);
+	U32toB4(cpindex, b4);
+	if ( 4 != ffs_fwrite(b4, 1, 4, ffs->fp) ) return 0; // 只更新fp中的cpindex
+	
+	ffs->tmp.cp_size++;
+	
 	ffs->tmp.new_unused_blockhead = blockindex; // 将blockindex存入new_unused_blockhead
-	// printf("5.set new_unused_blockhead:%d\n", ffs->tmp.new_unused_blockhead);
+	// printf("3.set new_unused_blockhead:%d\n", ffs->tmp.new_unused_blockhead);
 	return 1;
 }
 
@@ -4947,11 +4973,17 @@ static unsigned char removeblock(FileFS *ffs, unsigned int blockindex)
 static void j2ffs(FileFS *ffs)
 {
 	/*
-		fnj: state(byte,0xff-ready,other-no ready), block index(4 byte), block(BLOCKSIZE byte);
+		fnj: 
+		blocksize(4 byte)
+		state(byte,0xff-ready,other-no ready)
+		block index 1(4 byte), block 1(BLOCKSIZE byte)
+		block index 2(4 byte), block 2(BLOCKSIZE byte)
+		...
+		block index n(4 byte), block n(BLOCKSIZE byte) (n=blocksize)
 	*/
 	FILE *fpj;
 	
-	fpj = fopen(ffs->fnj, "rb");
+	fpj = ffs_fopen(ffs->fnj, "rb");
 	if ( fpj == NULL ) return;
 	
 	unsigned char b4[4];
