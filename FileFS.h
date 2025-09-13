@@ -65,9 +65,13 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 void FileFS_fclose(FileFS *ffs, FFS_FILE *stream);
 
 // fpos_t = int64 = long long
+// 文件指针的当前位置
 #define FFS_SEEK_CUR 1
+// 文件的末尾
 #define FFS_SEEK_END 2
+// 文件的开头
 #define FFS_SEEK_SET 0
+// 如果成功，则该函数返回零，否则返回非零值。
 unsigned char FileFS_fseek(FileFS *ffs, FFS_FILE *stream, long long offset, int whence);
 unsigned long long FileFS_ftell(FileFS *ffs, FFS_FILE *stream);
 void FileFS_rewind(FileFS *ffs, FFS_FILE *stream);

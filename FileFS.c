@@ -110,14 +110,19 @@ typedef struct FFS_FILE {
 	*/
 	unsigned char mode;
 	
-	unsigned int dir_blockindex;
-	unsigned short dir_offset;
+	unsigned int dir_blockindex; // 文件所在的目录块
+	unsigned short dir_offset;   // 文件在目录块中的尾部
 	
+	// 文件内容的起始block和结束block
 	unsigned int file_start_blockindex, file_stop_blockindex;
+	// 结束block的长度
 	unsigned short file_offset;
 	
+	// 准备读写的block
 	unsigned int pos_blockindex;
+	// 读写block的具体读写位置，和block的具体格式有关
 	unsigned short pos_offset;
+	// 文件读写的位置，与block的具体格式无关
 	unsigned long long pos;
 } FFS_FILE;
 
@@ -622,9 +627,10 @@ static FFS_FILE *do_fopen_r(FileFS *ffs, char *lastname, unsigned char mode, uns
 	
 	// block_head
 	if ( ! readblock(ffs, block_head_index, block) ) return NULL;
-	memcpy(b4, block+(12+1+14+4), 4);
+	// 读取当前block的停止位置
+	memcpy(b4, block+BLOCK_STOP_BLOCKINDEX, 4);
 	stop_blockindex = B4toU32(b4);
-	memcpy(b2, block+(12+1+14+4+4), 2);
+	memcpy(b2, block+BLOCK_OFFSET, 2);
 	offset = B2toU16(b2);
 	
 	// 搜索block，检查是否有名称相同的文件
@@ -646,15 +652,16 @@ static FFS_FILE *do_fopen_r(FileFS *ffs, char *lastname, unsigned char mode, uns
 			}
 				
 			state = block[k]; k++;
+			dir_file = state & 0x01;
+			if ( dir_file == 0 ) { // dir
+				k += 24;
+				continue;
+			}
 			memcpy(s, block+k, BLOCK_NAME_MAXSIZE); k+=BLOCK_NAME_MAXSIZE;
 			if ( strcmp(s, lastname) != 0 ) {
 				k += 10; // 4+4+2
 				continue;
-			}
-			dir_file = state & 0x01;
-			if ( dir_file == 0 ) {
-				return NULL; // same path exist;
-			}
+			}		
 			
 			dir_block = block;
 			dir_blockindex = index;
@@ -671,7 +678,6 @@ static FFS_FILE *do_fopen_r(FileFS *ffs, char *lastname, unsigned char mode, uns
 		if ( index == 0 ) return NULL; // 到这里说明block有问题
 		if ( ! readblock(ffs, index, block) ) return NULL; // 到这里说明block有问题
 	}
-	
 	if ( dir_block == NULL ) return NULL;
 
 	FFS_FILE *ff;
@@ -698,9 +704,9 @@ static FFS_FILE *do_fopen_r(FileFS *ffs, char *lastname, unsigned char mode, uns
 	return ff;
 }
 // 创建文件item
-static unsigned char do_fopen_createfileitem(FileFS *ffs, char *lastname, 
+static unsigned char do_fopen_createfile(FileFS *ffs, char *lastname, 
 	unsigned int org_start_blockindex, unsigned int org_stop_blockindex, unsigned short org_offset,
-	unsigned char *dir_block, unsigned int *dir_blockindex, unsigned short *dir_offset)
+	unsigned int *dir_blockindex, unsigned short *dir_offset)
 {
 	/*
 	if ( offset == BLOCKSIZE ) {
@@ -762,9 +768,10 @@ static unsigned char do_fopen_createfileitem(FileFS *ffs, char *lastname,
 		memcpy(block_stop+k, lastname, (int)strlen(lastname));
 		k += BLOCK_NAME_MAXSIZE;
 		
-		k += 4; // start_blockindex
-		k += 4; // stop_blockindex
-		k += 2; // offset
+		memset(block_stop+k, 0, 4+4+2);
+		k += 4; // start_blockindex = 0
+		k += 4; // stop_blockindex = 0
+		k += 2; // offset = 0
 		new_offset = k;
 		U16toB2(new_offset, b2);
 		memcpy(block_start + BLOCK_OFFSET, b2, 2);
@@ -784,7 +791,6 @@ static unsigned char do_fopen_createfileitem(FileFS *ffs, char *lastname,
 			}
 		}
 		
-		memcpy(dir_block, block_stop, BLOCKSIZE);
 		*dir_blockindex = block_stop_index;
 		*dir_offset = new_offset;
 		
@@ -804,9 +810,9 @@ static unsigned char do_fopen_createfileitem(FileFS *ffs, char *lastname,
 	if ( blockindex_2 == 0 ) {
 		if ( ffs->tmp.state == 1 ) tmpstop(ffs);
 		return 0;
-	}		
+	}
 	memset(block_2, 0, BLOCKSIZE);
-	k = 8;
+	k = 8; // tmpindex=0,nextindex=0
 	// prevblockindex
 	U32toB4(org_stop_blockindex, b4);
 	memcpy(block_2+k, b4, 4);
@@ -814,15 +820,15 @@ static unsigned char do_fopen_createfileitem(FileFS *ffs, char *lastname,
 	
 	// state
 	block_2[k] = 1; // file
-	k++; 
+	k++;
 	
 	memset(block_2+k, 0, BLOCK_NAME_MAXSIZE);
 	memcpy(block_2+k, lastname, (int)strlen(lastname));
 	k += BLOCK_NAME_MAXSIZE;
 	
-	k += 4; // start_blockindex
-	k += 4; // stop_blockindex
-	k += 2; // offset
+	k += 4; // start_blockindex = 0
+	k += 4; // stop_blockindex = 0
+	k += 2; // offset = 0
 	new_offset = k;
 	U16toB2(new_offset, b2);
 	memcpy(block_start + BLOCK_OFFSET, b2, 2);
@@ -830,7 +836,7 @@ static unsigned char do_fopen_createfileitem(FileFS *ffs, char *lastname,
 	U32toB4(blockindex_2, b4);
 	memcpy(block_start + BLOCK_STOP_BLOCKINDEX, b4, 4);
 	
-	memcpy(block_stop + 4, b4, 4);
+	memcpy(block_stop + 4, b4, 4); // block_stop->next = block_2
 	
 	for (i=0; i<2; i++) {
 		if ( ba[i].active ) {
@@ -840,14 +846,18 @@ static unsigned char do_fopen_createfileitem(FileFS *ffs, char *lastname,
 			}
 		}
 	}
-		
+	
+	if ( ! writeblock(ffs, blockindex_2, block_2) ) {
+		if ( ffs->tmp.state == 1 ) tmpstop(ffs);
+		return 0;
+	}
+			
 	if ( ffs->tmp.state == 1 ) {
 		if ( ! FileFS_commit(ffs) ) {
 			return 0;
 		}
 	}
 	
-	memcpy(dir_block, block_2, BLOCKSIZE);
 	*dir_blockindex = blockindex_2;
 	*dir_offset = new_offset;
 		
@@ -951,9 +961,9 @@ static FFS_FILE *do_fopen_w(FileFS *ffs, char *lastname, unsigned char mode, uns
 	
 	// block_head
 	if ( ! readblock(ffs, block_head_index, block) ) return NULL;
-	memcpy(b4, block+(12+1+14+4), 4);
+	memcpy(b4, block+BLOCK_STOP_BLOCKINDEX, 4);
 	stop_blockindex = B4toU32(b4);
-	memcpy(b2, block+(12+1+14+4+4), 2);
+	memcpy(b2, block+BLOCK_OFFSET, 2);
 	offset = B2toU16(b2);
 	
 	// 搜索block，检查是否有名称相同的文件
@@ -1004,14 +1014,14 @@ static FFS_FILE *do_fopen_w(FileFS *ffs, char *lastname, unsigned char mode, uns
 	
 	if ( dir_block == NULL ) { // not exist
 		// 创建文件item
-		if ( ! do_fopen_createfileitem(ffs, lastname, block_head_index, stop_blockindex, offset, 
-			block, &dir_blockindex, &dir_offset) ) {
+		if ( ! do_fopen_createfile(ffs, lastname, block_head_index, stop_blockindex, offset, 
+			&dir_blockindex, &dir_offset) ) {
 			return NULL;
 		}
-		dir_block = block;
+		// dir_block = block;
 	} else {
 		// 删除文件内容
-		if ( ! do_fopen_cleanfilecontent(ffs, block, dir_blockindex, dir_offset) ) {
+		if ( ! do_fopen_cleanfilecontent(ffs, dir_block, dir_blockindex, dir_offset) ) {
 			return NULL;
 		}
 	}
@@ -1134,11 +1144,11 @@ static FFS_FILE *do_fopen_a(FileFS *ffs, char *lastname, unsigned char mode, uns
 	FFS_FILE *ff;
 	if ( dir_block == NULL ) { // not exist
 		// 创建文件item
-		if ( ! do_fopen_createfileitem(ffs, lastname, block_head_index, stop_blockindex, offset, 
-			block, &dir_blockindex, &dir_offset) ) {
+		if ( ! do_fopen_createfile(ffs, lastname, block_head_index, stop_blockindex, offset, 
+			&dir_blockindex, &dir_offset) ) {
 			return NULL;
 		}
-		dir_block = block;
+		//dir_block = block;
 		ff = (FFS_FILE*)malloc(sizeof(FFS_FILE));
 		if ( ff == NULL ) return NULL;
 		
@@ -1174,6 +1184,8 @@ static FFS_FILE *do_fopen_a(FileFS *ffs, char *lastname, unsigned char mode, uns
 	unsigned long long pos = 0;
 	index = file_start_blockindex;
 	while (1) {
+		if ( index == 0 ) break;
+		
 		if ( index == file_stop_blockindex ) {
 			pos += file_offset - BLOCK_HEAD;
 			break;
@@ -1389,7 +1401,7 @@ size_t FileFS_fread(FileFS *ffs, void *ptr, size_t size, size_t nmemb, FFS_FILE 
 		}
 		
 		n = BLOCKSIZE - stream->pos_offset;
-		if ( n <= 0 ) return k;
+		// if ( n <= 0 ) return k; // 应该无需这个判断
 		if ( wannasize - k < n ) n = wannasize - k;
 		memcpy((unsigned char*)ptr + k, block + stream->pos_offset, n);
 		k += n;
@@ -1432,6 +1444,7 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 	
 	if ( ffs->tmp.state == 0 ) tmpstart(ffs, 1);
 	
+	unsigned char hasnewblock = 0;
 	if ( stream->pos_blockindex == 0 ) { // 空文件
 		new_blockindex = genblockindex(ffs);
 		if ( new_blockindex == 0 ) {
@@ -1466,6 +1479,7 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 		}
 		
 		next_blockindex = 0;
+		hasnewblock = 1;
 	} else {
 		//printf("pos_blockindex:%d\n", stream->pos_blockindex);
 		if ( ! readblock(ffs, stream->pos_blockindex, pos_block) ) {
@@ -1477,11 +1491,9 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 	}
 	
 	//printf("pos_blockindex:%d, pos_offset:%d\n", stream->pos_blockindex, stream->pos_offset);
-	
-	unsigned char hasnewblock = 0;
 	while (1) {
-		if ( stream->pos_offset == BLOCKSIZE ) {
-			if ( next_blockindex == 0 ) {
+		if ( stream->pos_offset >= BLOCKSIZE && wannasize - cut > 0 ) { // 恰好到block尾部
+			if ( next_blockindex == 0 ) { // 已到文件结尾，因此增加新的block
 				new_blockindex = genblockindex(ffs);
 				if ( new_blockindex == 0 ) {
 					if ( ffs->tmp.state == 1 ) tmpstop(ffs);
@@ -1531,16 +1543,14 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 			stream->pos_offset += n;
 			stream->pos += n;
 			
+			// 虽然没有生成新的block，但是最后一个block有所变动，所以需要更新dir_block
 			if ( stream->pos_blockindex == stream->file_stop_blockindex && stream->pos_offset > stream->file_offset) hasnewblock = 1;
+			
 			if ( hasnewblock == 1 ) {
 				if ( ! readblock(ffs, stream->dir_blockindex, dir_block) ) {
 					if ( ffs->tmp.state == 1 ) tmpstop(ffs);
 					return 0;
 				}
-				
-				//stream->file_stop_blockindex = stream->pos_blockindex;
-				//stream->file_offset = stream->pos_offset;
-				
 				U32toB4(stream->pos_blockindex, b4);
 				memcpy(dir_block+stream->dir_offset-6, b4, 4); // file_stop_blockindex
 				U16toB2(stream->pos_offset, b2);
@@ -1578,9 +1588,6 @@ size_t FileFS_fwrite(FileFS *ffs, const void *ptr, size_t size, size_t nmemb, FF
 					if ( ffs->tmp.state == 1 ) tmpstop(ffs);
 					return 0;
 				}
-				
-				//stream->file_stop_blockindex = stream->pos_blockindex;
-				//stream->file_offset = stream->pos_offset;
 				
 				U32toB4(stream->pos_blockindex, b4);
 				memcpy(dir_block+stream->dir_offset-6, b4, 4); // file_stop_blockindex
@@ -1657,7 +1664,6 @@ unsigned char FileFS_fseek(FileFS *ffs, FFS_FILE *stream, long long offset, int 
 				stream->pos_offset = BLOCKSIZE;
 				stream->pos += BLOCKSIZE - pos_offset;
 				new_offset -= (BLOCKSIZE - pos_offset);
-				pos_offset = BLOCK_HEAD;
 				
 				if ( ! readblock(ffs, blockindex, block) ) return 1;
 				memcpy(b4, block+8, 4);
@@ -1666,6 +1672,7 @@ unsigned char FileFS_fseek(FileFS *ffs, FFS_FILE *stream, long long offset, int 
 				blockindex = next_blockindex;
 				
 				stream->pos_blockindex = blockindex;
+				pos_offset = BLOCK_HEAD;
 			}
 			return 0;
 		} else { // 向文件头移动
@@ -1779,7 +1786,6 @@ unsigned char FileFS_fseek(FileFS *ffs, FFS_FILE *stream, long long offset, int 
 				stream->pos_offset = BLOCKSIZE;
 				stream->pos += BLOCKSIZE - pos_offset;
 				new_offset -= (BLOCKSIZE - pos_offset);
-				pos_offset = BLOCK_HEAD;
 				
 				if ( ! readblock(ffs, blockindex, block) ) return 1;
 				memcpy(b4, block+8, 4);
@@ -1788,6 +1794,7 @@ unsigned char FileFS_fseek(FileFS *ffs, FFS_FILE *stream, long long offset, int 
 				blockindex = next_blockindex;
 				
 				stream->pos_blockindex = blockindex;
+				pos_offset = BLOCK_HEAD;
 			}
 			return 0;
 		}
@@ -1977,7 +1984,7 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 	BlockArray ba[4];
 	int ba_used = 0;
 	unsigned char *block_head, *block_last, *block_item, *block_prev;
-	unsigned int block_item_index, block_last_index, block_prev_index, block_head_index;
+	unsigned int block_head_index, block_last_index, block_item_index, block_prev_index;
 	for (i=0; i<4; i++) ba[i].active = 0;
 	
 	unsigned char block[BLOCKSIZE];
@@ -1996,9 +2003,9 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 	block_head_index = blockindex;
 	ba_used = 1;
 	
-	memcpy(b4, block_head+(12+1+14+4), 4);
+	memcpy(b4, block_head+BLOCK_STOP_BLOCKINDEX, 4);
 	stop_blockindex = B4toU32(b4);
-	memcpy(b2, block_head+(12+1+14+4+4), 2);
+	memcpy(b2, block_head+BLOCK_OFFSET, 2);
 	offset = B2toU16(b2);
 	
 	// block_last
@@ -2015,7 +2022,7 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 	}
 	
 	// 搜索block，检查是否有名称相同的目录或文件
-	unsigned int file_start_blockindex, file_stop_blockindex;
+	unsigned int file_start_blockindex = 0, file_stop_blockindex = 0;
 	unsigned short item_offset = 0;
 	
 	unsigned char flag = 0, u;
@@ -2049,7 +2056,7 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 			// block_item
 			u = 0;
 			for (i=0; i<ba_used; i++) {
-				if ( ! ba[i].active ) continue;
+				if ( 0 == ba[i].active ) continue;
 				if ( ba[i].blockindex == index ) {
 					block_item = ba[i].block;
 					block_item_index = index;
@@ -2080,13 +2087,13 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 	
 	// printf("head:%d, item:%d, last:%d, item_offset:%d\n", block_head_index, block_item_index, block_last_index, item_offset);
 	// =======================
-	// 正式开始删除目录项
+	// 正式开始删除dir_block(保存了文件名的目录块)
 	if ( ffs->tmp.state == 0 ) tmpstart(ffs, 1);
 
 	// 删除文件内容
+	unsigned char file_block_stop[BLOCKSIZE];
 	if ( file_start_blockindex > 0 ) { // 文件有内容
 		// file block_stop
-		unsigned char file_block_stop[BLOCKSIZE];
 		if ( ! readblock(ffs, file_stop_blockindex, file_block_stop) ) {
 			if ( ffs->tmp.state == 1 ) tmpstop(ffs);
 			return 1;
@@ -2139,7 +2146,7 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 		
 		removeblock(ffs, block_last_index);
 		k = -1;
-		for (i=0; i<ba_used; i++) {
+		for (i=0; i<4; i++) {
 			if ( ! ba[i].active ) continue;
 			if ( ba[i].blockindex == block_last_index ) {
 				ba[i].active = 0;
@@ -2154,7 +2161,7 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 		
 		// block_prev
 		u = 0;
-		for (i=0; i<ba_used; i++) {
+		for (i=0; i<4; i++) {
 			if ( ! ba[i].active ) continue;
 			if ( ba[i].blockindex == block_prev_index ) {
 				block_prev = ba[i].block;
@@ -2184,7 +2191,7 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 		memcpy(block_head + BLOCK_OFFSET, b2, 2);
 	}
 	
-	for (i=0; i<ba_used; i++) {
+	for (i=0; i<4; i++) {
 		// printf("%d: write blockindex:%d\n", i, ba[i].blockindex);
 		if ( ! ba[i].active ) continue;
 		/*
@@ -2211,7 +2218,8 @@ int FileFS_remove(FileFS *ffs, const char *filename)
 }
 
 // =====================
-static int do_rename(FileFS *ffs, char *old_lastname, unsigned int old_blockindex, unsigned char old_type_dir, 
+static int do_rename(FileFS *ffs, 
+	char *old_lastname, unsigned int old_blockindex, unsigned char old_type_dir, 
 	char *new_lastname, unsigned int new_blockindex, unsigned char new_type_dir)
 {
 	int i;
@@ -4337,6 +4345,8 @@ void FileFS_closedir(FileFS *ffs, FFS_DIR *dir)
 }
 
 // ====================================
+// 从blockindex所指的目录中搜索pathname是否存在
+// blockindex必须是目录的第一个块
 static unsigned int findPathBlockindex(FileFS *ffs, unsigned int blockindex, char *pathname)
 {
 	unsigned char block[BLOCKSIZE];
@@ -4478,8 +4488,9 @@ unsigned char FileFS_commit(FileFS *ffs)
 			memcpy(block+k, b4, 4); k += 4;
 			// other,皆为0
 			fwrite(block, 1, BLOCKSIZE, fp);
+
+			blocksize++;
 		}
-		blocksize++;
 		
 		// copy fp_cp to fnj
 		ffs_rewind(ffs->tmp.fp_cp);
